@@ -12,8 +12,11 @@ knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 library(jsonlite)
 library(ggplot2)
 
-metadata <- fromJSON("results/run-metadata.json")
-eta_files <- list.files("results", pattern = "^eta_", full.names = TRUE)
+# rmarkdown renders this file with report/ as its working directory.
+# Resolve the repository-level results directory rather than assuming cwd.
+results_dir <- normalizePath("../results", mustWork = TRUE)
+metadata <- fromJSON(file.path(results_dir, "run-metadata.json"))
+eta_files <- list.files(results_dir, pattern = "^eta_", full.names = TRUE)
 stopifnot(length(eta_files) > 0)
 eta_file <- tail(sort(eta_files), 1)
 eta <- as.matrix(read.table(eta_file, header = FALSE))
