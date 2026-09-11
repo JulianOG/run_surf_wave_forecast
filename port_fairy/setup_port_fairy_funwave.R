@@ -19,67 +19,57 @@ data_dir <- file.path(root, "data")
 out_dir <- file.path(root, "output")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-# Put the two source files in port_fairy/data/ using these names, or edit here.
+# Commit the DEM using this name. The monthly IMOS buoy file is downloaded at
+# runtime and deliberately remains outside Git.
 bathy_file <- file.path(data_dir, "VCDEM21_GDA2020_z54_Seamless_portFairy.tif")
-#buoy_file <- file.path(data_dir,
-#  "VIC-DEAKIN-UNI_20260901_PORT-FAIRY_RT_WAVE-PARAMETERS_monthly.nc")
+if (!file.exists(bathy_file)) {
+  stop("Bathymetry is missing: ", bathy_file)
+}
 
-dir.create(data_dir, recursive = TRUE, showWarnings = FALSE)
-
-month_starts <- seq(
-  as.Date(format(Sys.time(), "%Y-%m-01")),
-  by = "-1 month",
-  length.out = 3
-)
-
+# Try this month, then the two preceding months. This avoids failing on the
+# first day of a month before the newest near-real-time file is available.
 download_buoy_month <- function(month_start, data_dir) {
   ymd <- format(month_start, "%Y%m01")
   yyyy <- format(month_start, "%Y")
-  
   url <- paste0(
     "https://imos-data.s3-ap-southeast-2.amazonaws.com/",
-    "Deakin_University/WAVE-BUYS/REALTIME/WAVE-PARAMETERS/",
-    "PORT-FAIRY/", yyyy, "/",
-    "VIC-DEAKIN-UNI_", ymd,
+    "Deakin_University/WAVE-BUOYS/REALTIME/WAVE-PARAMETERS/PORT-FAIRY/",
+    yyyy, "/VIC-DEAKIN-UNI_", ymd,
     "_PORT-FAIRY_RT_WAVE-PARAMETERS_monthly.nc"
   )
-  
   destination <- file.path(data_dir, basename(url))
   temporary <- paste0(destination, ".download")
-  
+
   if (file.exists(destination) && file.info(destination)$size > 1000) {
     return(destination)
   }
-  
-  ok <- tryCatch({
-    download.file(url, temporary, mode = "wb", quiet = FALSE)
-    file.rename(temporary, destination)
-  }, error = function(e) FALSE)
-  
-  if (isTRUE(ok) && file.exists(destination) &&
-      file.info(destination)$size > 1000) {
-    return(destination)
+
+  status <- tryCatch(
+    utils::download.file(url, temporary, mode = "wb", quiet = TRUE),
+    error = function(e) 1L
+  )
+  if (isTRUE(status == 0) && file.exists(temporary) &&
+      file.info(temporary)$size > 1000) {
+    if (file.exists(destination)) unlink(destination)
+    if (file.rename(temporary, destination)) return(destination)
   }
-  
-  unlink(temporary)
+  if (file.exists(temporary)) unlink(temporary)
   NULL
 }
 
+month_starts <- seq(
+  as.Date(format(Sys.time(), "%Y-%m-01")),
+  by = "-1 month", length.out = 3
+)
 buoy_file <- NULL
 for (month_start in month_starts) {
   buoy_file <- download_buoy_month(month_start, data_dir)
   if (!is.null(buoy_file)) break
 }
-
 if (is.null(buoy_file)) {
-  stop("Could not download the current or previous two Port Fairy IMOS monthly files.")
+  stop("Could not download a current or previous Port Fairy IMOS monthly file.")
 }
-
-message("Using buoy file: ", buoy_file)
-
-
-
-stopifnot(file.exists(bathy_file), file.exists(buoy_file))
+message("Using buoy data: ", basename(buoy_file))
 
 # Pink domain corners in clockwise order, read approximately from the supplied
 # figure. These become an axis-aligned rectangle in the local rotated CRS.
@@ -99,24 +89,20 @@ total_time <- 300                # seconds = 5 minutes
 plot_intv <- 30                  # seconds
 
 # ----- Latest good / not-yet-evaluated buoy observation --------------------
-nc_close(nc)
 nc <- nc_open(buoy_file)
 on.exit(nc_close(nc), add = TRUE)
 
-read_buoy <- function(nc,name) {
+read_buoy <- function(name) {
   x <- ncvar_get(nc, name)
   x[x <= -9990] <- NA_real_
   x
 }
 
-time_days <- nc$dim$TIME$vals
+time_days <- read_buoy("TIME")
 time_utc <- as.POSIXct("1950-01-01 00:00:00", tz = "UTC") + time_days * 86400
-hs <- ncvar_get(nc,"WSSH")
-hs[hs < 0-9990] <-  NA_real_
-tp <- ncvar_get(nc,"WPPE")
-tp[tp < 0-9990] <-  NA_real_
-dir_from <- ncvar_get(nc,"WPDI")
-dir_from[dir_from < 0-9990] <-  NA_real_
+hs <- read_buoy("WSSH")
+tp <- read_buoy("WPPE")
+dir_from <- read_buoy("WPDI")
 qc <- ncvar_get(nc, "WAVE_quality_control")
 
 # QC 1 = good; 2 = not yet evaluated. Do not silently use questionable/bad.
@@ -154,7 +140,7 @@ buoy_om <- project(buoy_ll, omerc_crs)
 domain_poly_native <- project(domain_poly_ll, crs(bathy))
 bathy_crop <- crop(bathy, domain_poly_native, snap = "out")
 template <- rast(ext(domain_poly_om), resolution = dx, crs = omerc_crs)
-elevation <- project(bathy, template, method = "bilinear")
+elevation <- project(bathy_crop, template, method = "bilinear")
 
 # DEM elevations are positive on land and negative below datum. FUNWAVE uses
 # positive water depth.  Land/NA cells are retained as 0 m so its wet-dry mask

@@ -1,100 +1,57 @@
-# Daily FUNWAVE-TVD test forecast
+# Port Fairy: coarse latest-buoy FUNWAVE setup
 
-This starter repository runs a small FUNWAVE-TVD test each day, renders an R
-Markdown results page, and deploys only the HTML report to GitHub Pages.
+This is a **first-pass 5-minute, 20 m resolution** case for the pink domain in
+the supplied map. It uses a local Oblique Mercator projection, with model +x
+running from the buoy-side pink edge toward the Port Fairy coast. It is small
+enough to debug on a laptop or GitHub runner before using 10 m or 5 m
+bathymetry.
 
-## What the workflow does
+## Input files
 
-1. At 03:17 UTC each day, it checks for `ghcr.io/julianog/funwave-tvd:v1`.
-2. If absent (or if **Run workflow** is used with **rebuild image**), it builds
-   the Docker image and pushes it to GitHub Container Registry.
-3. It runs the compact bundled `beach_2d_radiation` diagnostic, then a
-   five-minute Port Fairy case using the committed DEM and current IMOS buoy
-   forcing.
-4. R Markdown publishes the Port Fairy report as `index.html`; the compact
-   test diagnostic is also published as `beach_test.html`.
-5. It retains model output as a private seven-day Actions artifact and
-   publishes only the HTML pages to GitHub Pages.
-
-## Install
-
-Copy all files in this folder to the root of
-[`JulianOG/run_surf_wave_forecast`](https://github.com/JulianOG/run_surf_wave_forecast).
-Commit and push them to `main`.
-
-Then open **Settings → Pages** and set **Build and deployment → Source** to
-**GitHub Actions**. Open **Actions → Daily FUNWAVE test and report → Run
-workflow** to perform the first build and test immediately.
-
-The live report will be at:
-
-`https://julianog.github.io/run_surf_wave_forecast/`
-
-## Before using real forecast forcing
-
-- Replace `scripts/run_test_case.sh` with logic that downloads/prepares the
-  forecast bathymetry and boundary conditions.
-- Change the `FUNWAVE_REF` commit SHA only after validating it, then update the
-  image tag (for example `v4`) to force a new image build.
-- GitHub-hosted runners are CPU-only. Use a self-hosted GPU or HPC runner for
-  GPU FUNWAVE-TVD and larger operational domains.
-
-## Port Fairy coarse latest-buoy case
-
-`port_fairy/` contains a 20 m, five-minute first-pass setup for the supplied
-pink Port Fairy domain. It crops the local Victorian DEM, reads the newest
-usable IMOS Spotter observation, writes `DEPTH_TYPE = DATA` input and runs a
-FUNWAVE `WK_IRR` irregular-wave source along the buoy-side edge of a rotated
-local grid. See
-[`port_fairy/README.md`](port_fairy/README.md) for the two local files to copy
-into `port_fairy/data/`, build/run commands, and important forcing limitations.
-
-The DEM must be committed at:
+Commit this DEM into `port_fairy/data/`:
 
 ```text
-port_fairy/data/VCDEM21_GDA2020_z54_Seamless_portFairy.tif
+VCDEM21_GDA2020_z54_Seamless_portFairy.tif
 ```
 
-The Action downloads the latest available IMOS monthly Port Fairy buoy file
-(falling back two months when necessary), so buoy NetCDF files are not stored in
-the repository.
+The script downloads the current month's IMOS monthly file automatically. If it
+is not yet available, it falls back to either of the two preceding months.
 
-## Plot translation
+## Build and run
 
-`report/beach_2d_radiation_plots.Rmd` is an R translation of the MATLAB
-diagnostic scripts in `reference/`. It renders the instantaneous three-panel
-plot from the fields produced by the workflow. The averaged momentum-balance
-and vertical-profile sections are activated when the corresponding optional
-FUNWAVE outputs are requested.
-
-The workflow's `v4` image compiles FUNWAVE with `AB_OUTPUT`, which writes
-`Ax`, `Ay`, `Bx` and `By`, and runs for 300 seconds. This passes the bundled
-case's 180-second steady-state threshold and produces the radiation and
-momentum-balance fields required by the translated MATLAB diagnostic plots.
-
-`example_results/` in the delivery ZIP contains one compact test run so that
-the Rmd can be rendered locally. It is ignored by Git and is not intended for
-commit to the repository.
-
-## Render an Actions result locally
-
-Download and unzip a `funwave-results-<run-id>` artifact beside the repository.
-In `report/forecast_report.Rmd`, point `results_dir` to that folder, for
-example:
+From the repository root:
 
 ```r
-results_dir <- normalizePath("../funwave-results-34550796372", mustWork = TRUE)
+source("port_fairy/setup_port_fairy_funwave.R")
 ```
 
-Then render it locally with:
+This creates `port_fairy/output/depth.txt`, `input.txt`, a 20 m positive-depth
+GeoTIFF, and CSV files recording the selected latest buoy observation and grid.
 
-```r
-rmarkdown::render("report/forecast_report.Rmd")
+Then run locally:
+
+```bash
+bash port_fairy/run_port_fairy.sh
 ```
 
-## Notes
+Results are written to `port_fairy/output/results/`.
 
-- Scheduled GitHub Actions workflows run from the default branch and can be
-  delayed at busy times.
-- Public GitHub Pages deployment is governed by the repository's Pages and
-  Actions permissions; this workflow contains the permissions it requires.
+The repository's daily Action performs these same steps after the compact
+upstream FUNWAVE test. It uploads both result sets as an artifact and publishes
+the Port Fairy HTML report to GitHub Pages.
+
+## What is and is not represented
+
+FUNWAVE's `WK_IRR` is an *internal* irregular-wave source line placed 120 m
+inside the buoy-side long pink edge, rather than a true open boundary. The available
+monthly IMOS file contains only Hs, peak period and peak direction, so the
+script creates a TMA/JONSWAP-style spectrum from those three quantities. It
+does not reproduce the buoy's phase-resolved sea surface or directional
+spectrum.
+
+Before treating outputs as a forecast, inspect the generated
+`depth_20m_positive_water_depth.tif` and check the warning about incident-wave
+direction. If the latest waves enter principally from the south, a rotated or
+south-boundary grid is the next improvement. For real boundary forcing, obtain
+the Spotter directional spectrum (or a calibrated offshore WW3 spectrum), then
+use FUNWAVE `WK_TIME_SERIES` / spectrum components.

@@ -1,0 +1,82 @@
+---
+title: "Port Fairy near-real-time FUNWAVE test"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 6)
+
+case_dir <- normalizePath("../port_fairy/output", mustWork = TRUE)
+results_dir <- file.path(case_dir, "results")
+forcing <- read.csv(file.path(case_dir, "latest_buoy_forcing.csv"),
+                    check.names = FALSE)
+grid <- read.csv(file.path(case_dir, "grid_metadata.csv"), check.names = FALSE)
+
+read_field <- function(prefix, directory = results_dir) {
+  candidates <- list.files(directory, pattern = paste0("^", prefix, "_[0-9]{5}$"),
+                           full.names = TRUE)
+  if (!length(candidates)) return(NULL)
+  number <- as.integer(sub(paste0("^", prefix, "_"), "", basename(candidates)))
+  as.matrix(utils::read.table(candidates[which.max(number)], header = FALSE))
+}
+
+eta <- read_field("eta")
+hmax <- read_field("Hmax")
+waveheight <- read_field("WaveHeight")
+```
+
+## Latest forcing
+
+This five-minute test uses a TMA/JONSWAP-style irregular wave source derived
+from the newest usable IMOS Spotter observation. It is a model demonstration,
+not a validated harbour forecast.
+
+```{r forcing}
+knitr::kable(forcing, digits = 2)
+```
+
+The positive model x-axis has a true-north bearing of
+`r round(grid$model_x_bearing_deg_true, 1)` degrees and runs from the buoy-side
+source edge toward the coast. `ThetaPeak` is therefore already expressed in
+the rotated FUNWAVE coordinate system.
+
+## Latest free-surface elevation
+
+```{r eta, fig.cap='Latest modelled water-surface elevation. x = 0 is the buoy-side source edge; x increases toward the coast.'}
+if (is.null(eta)) {
+  plot.new(); text(0.5, 0.5, "No eta output was produced.")
+} else {
+  x <- (seq_len(nrow(eta)) - 1) * grid$dx_m
+  y <- (seq_len(ncol(eta)) - 1) * grid$dy_m
+  image(x, y, eta, asp = 1, col = hcl.colors(40, "Blue-Red 3"),
+        xlab = "Model x: buoy-side edge to coast (m)",
+        ylab = "Rotated model y (m)")
+  contour(x, y, eta, add = TRUE, drawlabels = FALSE, col = "grey20")
+}
+```
+
+## Maximum wave diagnostic
+
+```{r hmax, fig.cap='Maximum-wave or wave-height diagnostic available at the end of the 5-minute test.'}
+z <- if (!is.null(waveheight)) waveheight else hmax
+if (is.null(z)) {
+  plot.new(); text(0.5, 0.5, "No WaveHeight/Hmax output was produced.")
+} else {
+  x <- (seq_len(nrow(z)) - 1) * grid$dx_m
+  y <- (seq_len(ncol(z)) - 1) * grid$dy_m
+  image(x, y, z, asp = 1, col = hcl.colors(40, "YlOrRd", rev = TRUE),
+        xlab = "Model x: buoy-side edge to coast (m)",
+        ylab = "Rotated model y (m)")
+}
+```
+
+## Provenance
+
+```{r provenance}
+knitr::kable(grid)
+```

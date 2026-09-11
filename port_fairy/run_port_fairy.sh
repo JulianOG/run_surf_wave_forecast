@@ -10,5 +10,5 @@ mkdir -p "$case_dir/results"
 docker run --rm \
   --user "$(id -u):$(id -g)" \
   -v "$case_dir:/work" \
-  ghcr.io/julianog/funwave-tvd:v3 \
-  mpirun --allow-run-as-root -np 2 funwave input.txt
+  ghcr.io/julianog/funwave-tvd:v4 \
+  -lc 'mpirun --allow-run-as-root -np 2 funwave input.txt'

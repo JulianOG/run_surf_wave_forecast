@@ -8,12 +8,13 @@ Markdown results page, and deploys only the HTML report to GitHub Pages.
 1. At 03:17 UTC each day, it checks for `ghcr.io/julianog/funwave-tvd:v1`.
 2. If absent (or if **Run workflow** is used with **rebuild image**), it builds
    the Docker image and pushes it to GitHub Container Registry.
-3. It runs a 30-second, two-MPI-process version of FUNWAVE's bundled
-   `beach_2d_radiation` case.
-4. R Markdown uses base R and `terra` to reproduce the FUNWAVE
-   `beach_2d_radiation` elevation, breaking-stress and friction-stress plots.
-5. It retains all model output as a private seven-day Actions artifact and
-   publishes just `site/index.html` to GitHub Pages.
+3. It runs the compact bundled `beach_2d_radiation` diagnostic, then a
+   five-minute Port Fairy case using the committed DEM and current IMOS buoy
+   forcing.
+4. R Markdown publishes the Port Fairy report as `index.html`; the compact
+   test diagnostic is also published as `beach_test.html`.
+5. It retains model output as a private seven-day Actions artifact and
+   publishes only the HTML pages to GitHub Pages.
 
 ## Install
 
@@ -48,6 +49,16 @@ local grid. See
 [`port_fairy/README.md`](port_fairy/README.md) for the two local files to copy
 into `port_fairy/data/`, build/run commands, and important forcing limitations.
 
+The DEM must be committed at:
+
+```text
+port_fairy/data/VCDEM21_GDA2020_z54_Seamless_portFairy.tif
+```
+
+The Action downloads the latest available IMOS monthly Port Fairy buoy file
+(falling back two months when necessary), so buoy NetCDF files are not stored in
+the repository.
+
 ## Plot translation
 
 `report/beach_2d_radiation_plots.Rmd` is an R translation of the MATLAB
@@ -56,7 +67,7 @@ plot from the fields produced by the workflow. The averaged momentum-balance
 and vertical-profile sections are activated when the corresponding optional
 FUNWAVE outputs are requested.
 
-The workflow's `v3` image compiles FUNWAVE with `AB_OUTPUT`, which writes
+The workflow's `v4` image compiles FUNWAVE with `AB_OUTPUT`, which writes
 `Ax`, `Ay`, `Bx` and `By`, and runs for 300 seconds. This passes the bundled
 case's 180-second steady-state threshold and produces the radiation and
 momentum-balance fields required by the translated MATLAB diagnostic plots.

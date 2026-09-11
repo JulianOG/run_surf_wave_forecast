@@ -25,8 +25,8 @@ permissions:
 env:
   # GHCR image names must be lowercase. Change this if the repository moves.
   IMAGE_NAME: ghcr.io/julianog/funwave-tvd
-  # v3 adds AB_OUTPUT for the MATLAB-to-R vertical-profile diagnostic.
-  IMAGE_TAG: v3
+  # v4 adds R ncdf4, required to download/read the Port Fairy IMOS buoy file.
+  IMAGE_TAG: v4
 
 jobs:
   ensure-image:
@@ -86,7 +86,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run the compact FUNWAVE test case
+      - name: Run the compact upstream FUNWAVE test case
         run: |
           mkdir -p results site
           docker run --rm \
@@ -95,19 +95,38 @@ jobs:
             "${{ needs.ensure-image.outputs.image }}" \
             /work/scripts/run_test_case.sh
 
-      - name: Render the HTML results page
+      - name: Build the rotated Port Fairy case from bathymetry and buoy data
         run: |
           docker run --rm \
             --user root \
             -v "$PWD:/work" \
             "${{ needs.ensure-image.outputs.image }}" \
-            -lc 'Rscript -e "rmarkdown::render(\"report/beach_2d_radiation_plots.Rmd\", output_file=\"index.html\", output_dir=\"site\", quiet=TRUE)"'
+            -lc 'Rscript /work/port_fairy/setup_port_fairy_funwave.R'
+
+      - name: Run the 5-minute Port Fairy FUNWAVE case
+        run: |
+          mkdir -p port_fairy/output/results
+          docker run --rm \
+            --user root \
+            -v "$PWD/port_fairy/output:/work" \
+            "${{ needs.ensure-image.outputs.image }}" \
+            -lc 'mpirun --allow-run-as-root -np 2 funwave input.txt'
+
+      - name: Render Port Fairy and compact-test HTML pages
+        run: |
+          docker run --rm \
+            --user root \
+            -v "$PWD:/work" \
+            "${{ needs.ensure-image.outputs.image }}" \
+            -lc 'Rscript -e "rmarkdown::render(\"report/port_fairy_report.Rmd\", output_file=\"index.html\", output_dir=\"site\", quiet=TRUE); rmarkdown::render(\"report/beach_2d_radiation_plots.Rmd\", output_file=\"beach_test.html\", output_dir=\"site\", quiet=TRUE)"'
 
       - name: Upload full model results temporarily
         uses: actions/upload-artifact@v4
         with:
           name: funwave-results-${{ github.run_id }}
-          path: results/
+          path: |
+            results/
+            port_fairy/output/
           retention-days: 7
           if-no-files-found: error
 
