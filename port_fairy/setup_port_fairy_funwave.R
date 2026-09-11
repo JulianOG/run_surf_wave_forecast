@@ -29,6 +29,8 @@ if (!file.exists(bathy_file)) {
 # Try this month, then the two preceding months. This avoids failing on the
 # first day of a month before the newest near-real-time file is available.
 download_buoy_month <- function(month_start, data_dir) {
+  # `for (x in Date_vector)` drops the Date class in R, so coerce defensively.
+  month_start <- as.Date(month_start, origin = "1970-01-01")
   ymd <- format(month_start, "%Y%m01")
   yyyy <- format(month_start, "%Y")
   url <- paste0(
@@ -62,8 +64,8 @@ month_starts <- seq(
   by = "-1 month", length.out = 3
 )
 buoy_file <- NULL
-for (month_start in month_starts) {
-  buoy_file <- download_buoy_month(month_start, data_dir)
+for (month_index in seq_along(month_starts)) {
+  buoy_file <- download_buoy_month(month_starts[month_index], data_dir)
   if (!is.null(buoy_file)) break
 }
 if (is.null(buoy_file)) {
@@ -98,7 +100,9 @@ read_buoy <- function(name) {
   x
 }
 
-time_days <- read_buoy("TIME")
+# In this IMOS file TIME is a dimension coordinate, not a variable, so it is
+# exposed by ncdf4 through nc$dim rather than ncvar_get().
+time_days <- nc$dim[["TIME"]]$vals
 time_utc <- as.POSIXct("1950-01-01 00:00:00", tz = "UTC") + time_days * 86400
 hs <- read_buoy("WSSH")
 tp <- read_buoy("WPPE")
