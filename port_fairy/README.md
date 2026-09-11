@@ -42,8 +42,9 @@ The live report will be at:
 ## Port Fairy coarse latest-buoy case
 
 `port_fairy/` contains a 20 m, five-minute first-pass setup for the supplied
-pink Port Fairy domain. It crops the local Victorian DEM, reads the newest
-usable IMOS Spotter observation, writes `DEPTH_TYPE = DATA` input and runs a
+pink Port Fairy domain. It warps the complete local Victorian DEM directly
+onto the rotated rectangular model grid (it does not pre-crop the DEM), reads
+the newest usable IMOS Spotter observation, writes `DEPTH_TYPE = DATA` input and runs a
 FUNWAVE `WK_IRR` irregular-wave source along the buoy-side edge of a rotated
 local grid. See
 [`port_fairy/README.md`](port_fairy/README.md) for the two local files to copy
@@ -58,6 +59,11 @@ port_fairy/data/VCDEM21_GDA2020_z54_Seamless_portFairy.tif
 The Action downloads the latest available IMOS monthly Port Fairy buoy file
 (falling back two months when necessary), so buoy NetCDF files are not stored in
 the repository.
+
+The Port Fairy page includes the warped elevation, exact `depth.txt`, a
+raster-to-depth-file difference check, FUNWAVE's `dep.out` depth read-back, and
+the transformed buoy-wave direction relative to the internal wavemaker. Inspect
+these diagnostics before interpreting the coarse result.
 
 ## Plot translation
 

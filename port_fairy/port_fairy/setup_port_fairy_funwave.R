@@ -118,7 +118,7 @@ i <- tail(which(usable), 1)
 # The Spotter direction is a compass FROM direction.
 bearing_to <- (dir_from[i] + 180) %% 360
 
-# ----- Crop and coarsen the DEM ---------------------------------------------
+# ----- Warp and coarsen the DEM ---------------------------------------------
 bathy <- rast(bathy_file)
 if (is.na(crs(bathy))) stop("The bathymetry raster has no CRS.")
 
@@ -161,13 +161,54 @@ source_is_low_x <- abs(buoy_x - xmin(template)) < abs(buoy_x - xmax(template))
 
 if (source_is_low_x) {
   depth_funwave <- t(depth_matrix[nrow(depth_matrix):1, , drop = FALSE])
-  model_x_bearing <- model_x_bearing_guess
-  model_y_bearing <- (model_x_bearing - 90) %% 360
+  source_edge <- "minimum rotated x"
 } else {
   depth_funwave <- t(depth_matrix[, ncol(depth_matrix):1, drop = FALSE])
-  model_x_bearing <- (model_x_bearing_guess + 180) %% 360
-  model_y_bearing <- (model_x_bearing - 90) %% 360
+  source_edge <- "maximum rotated x"
 }
+
+# Measure the bearings of the *actual* model axes after the oblique projection
+# and matrix re-ordering.  Do not assume that a PROJ `alpha` is automatically
+# the bearing of the final raster x axis: `gamma`, the chosen source edge and
+# matrix reversals all matter.  This makes ThetaPeak reproducible and provides
+# an explicit diagnostic of the rotated grid.
+compass_bearing <- function(from_ll, to_ll) {
+  lon1 <- from_ll[1] * pi / 180
+  lat1 <- from_ll[2] * pi / 180
+  lon2 <- to_ll[1] * pi / 180
+  lat2 <- to_ll[2] * pi / 180
+  dlon <- lon2 - lon1
+  (atan2(sin(dlon) * cos(lat2),
+         cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dlon)) *
+     180 / pi + 360) %% 360
+}
+
+rotated_point_to_ll <- function(x, y) {
+  p <- vect(matrix(c(x, y), ncol = 2), type = "points", crs = omerc_crs)
+  crds(project(p, "EPSG:4326"))[1, ]
+}
+
+axis_step <- min(200, 10 * dx, (xmax(template) - xmin(template)) / 4,
+                 (ymax(template) - ymin(template)) / 4)
+mid_x <- (xmin(template) + xmax(template)) / 2
+mid_y <- (ymin(template) + ymax(template)) / 2
+
+if (source_is_low_x) {
+  x0 <- c(xmin(template) + dx / 2, mid_y)
+  x1 <- c(x0[1] + axis_step, x0[2])
+  y0 <- c(mid_x, ymin(template) + dx / 2)
+  y1 <- c(y0[1], y0[2] + axis_step)
+} else {
+  x0 <- c(xmax(template) - dx / 2, mid_y)
+  x1 <- c(x0[1] - axis_step, x0[2])
+  y0 <- c(mid_x, ymax(template) - dx / 2)
+  y1 <- c(y0[1], y0[2] - axis_step)
+}
+
+model_x_bearing <- compass_bearing(rotated_point_to_ll(x0[1], x0[2]),
+                                   rotated_point_to_ll(x1[1], x1[2]))
+model_y_bearing <- compass_bearing(rotated_point_to_ll(y0[1], y0[2]),
+                                   rotated_point_to_ll(y1[1], y1[2]))
 
 # FUNWAVE's ThetaPeak is the direction the wave travels, measured from +x.
 dot_bearing <- function(a, b) cos((a - b) * pi / 180)
@@ -181,8 +222,13 @@ forcing <- data.frame(
   qc = qc[i], hs_m = hs[i], tp_s = tp[i],
   peak_direction_from_deg_true = dir_from[i],
   peak_direction_to_deg_true = bearing_to,
+  buoy_lon = crds(buoy_ll)[1, 1],
+  buoy_lat = crds(buoy_ll)[1, 2],
+  requested_cross_shore_bearing_deg_true = model_x_bearing_guess,
   model_x_bearing_deg_true = model_x_bearing,
-  funwave_theta_peak_deg = theta_peak
+  model_y_bearing_deg_true = model_y_bearing,
+  funwave_theta_peak_deg = theta_peak,
+  inward_source_component = cos(theta_peak * pi / 180)
 )
 write.csv(forcing, file.path(out_dir, "latest_buoy_forcing.csv"), row.names = FALSE)
 
@@ -195,6 +241,12 @@ write.table(
 )
 writeRaster(depth_gis, file.path(out_dir, "depth_20m_positive_water_depth.tif"),
             overwrite = TRUE)
+writeRaster(elevation, file.path(out_dir, "elevation_20m_warped.tif"),
+            overwrite = TRUE)
+pink_xy <- crds(domain_poly_om)
+write.csv(data.frame(vertex = seq_len(nrow(pink_xy)), x_m = pink_xy[, 1],
+                     y_m = pink_xy[, 2]),
+          file.path(out_dir, "pink_domain_rotated_vertices.csv"), row.names = FALSE)
 
 # Use the median water depth in the first 100 m offshore as DEP_WK. A source
 # needs finite depth: if this strip is unexpectedly dry, stop rather than
@@ -207,10 +259,11 @@ if (!is.finite(dep_wk) || dep_wk <= 0) {
 }
 
 # Warn when the recorded waves propagate away from the buoy-side source.
-if (abs(theta_peak) > 80) {
+if (abs(theta_peak) > 60) {
   warning(sprintf(
-    paste0("Latest waves are %.1f degrees from the buoy-to-coast source normal. ",
-           "Inspect the forcing direction before interpreting this run."), theta_peak
+    paste0("Latest waves are %.1f degrees from the inward source normal. ",
+           "This is strongly oblique; inspect the forcing-geometry diagnostic ",
+           "before interpreting this run."), theta_peak
   ))
 }
 
@@ -260,8 +313,13 @@ grid_info <- data.frame(
   bathy_file = normalizePath(bathy_file),
   buoy_file = normalizePath(buoy_file),
   omerc_crs = omerc_crs,
+  requested_cross_shore_bearing_deg_true = model_x_bearing_guess,
   model_x_bearing_deg_true = model_x_bearing,
-  source_edge = if (source_is_low_x) "minimum rotated x" else "maximum rotated x",
+  model_y_bearing_deg_true = model_y_bearing,
+  source_edge = source_edge,
+  x_wk_m = x_wk,
+  funwave_theta_peak_deg = theta_peak,
+  inward_source_component = cos(theta_peak * pi / 180),
   xmin_m = xmin(template), xmax_m = xmax(template),
   ymin_m = ymin(template), ymax_m = ymax(template),
   dx_m = dx, dy_m = dx, Mglob = mglob, Nglob = nglob,

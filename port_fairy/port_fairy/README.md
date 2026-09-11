@@ -25,8 +25,9 @@ From the repository root:
 source("port_fairy/setup_port_fairy_funwave.R")
 ```
 
-This creates `port_fairy/output/depth.txt`, `input.txt`, a 20 m positive-depth
-GeoTIFF, and CSV files recording the selected latest buoy observation and grid.
+This creates `port_fairy/output/depth.txt`, `input.txt`, 20 m positive-depth
+and elevation GeoTIFFs, rotated pink-domain vertices, and CSV files recording
+the selected latest buoy observation and grid.
 
 Then run locally:
 
