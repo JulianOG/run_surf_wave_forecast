@@ -191,7 +191,8 @@ write.csv(forcing, file.path(out_dir, "latest_buoy_forcing.csv"), row.names = FA
 mglob <- nrow(depth_funwave)     # x: east -> west
 nglob <- ncol(depth_funwave)     # y: south -> north
 write.table(
-  depth_funwave, file.path(out_dir, "depth.txt"),
+  # FUNWAVE reads one y row at a time: Nglob text rows, each with Mglob values.
+  t(depth_funwave), file.path(out_dir, "depth.txt"),
   row.names = FALSE, col.names = FALSE, quote = FALSE
 )
 writeRaster(depth_gis, file.path(out_dir, "depth_20m_positive_water_depth.tif"),
