@@ -1,4 +1,4 @@
-# Port Fairy 30-minute animation and maximum-wave-height update
+# Port Fairy social-manifest and annotated-animation update
 
 Copy these files over the matching files in the root of the
 run_surf_wave_forecast repository, then commit and use Actions > Daily FUNWAVE
@@ -17,6 +17,19 @@ This update keeps the verified GIF Docker image and:
 - removes the magenta polygon from the report maps while retaining the black
   FUNWAVE grid outline and the buoy marker;
 - uses the verified Docker image tag v6.
+
+It also makes a separate social-feed bot possible without granting it access to
+this modelling repository. After a successful render, the workflow publishes:
+
+- `latest.json` at the GitHub Pages root, containing the buoy, model and QC
+  metadata plus stable public asset URLs;
+- `assets/port-fairy-full.gif` and `assets/port-fairy-final-sixth.gif`;
+- `assets/port-fairy-maximum-waveheight.png`.
+
+The GIF frames show Port Fairy local date/time, model elapsed time, buoy Hs,
+Tp, observed *from* direction, and a red arrow in the corresponding wave
+travel direction. `latest.json` marks only QC 1 observations as eligible for
+automatic public posting.
 
 The internal model-grid geometry is unchanged; only the report’s magenta
 display polygon has been removed.

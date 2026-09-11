@@ -19,6 +19,15 @@ forcing <- read.csv(file.path(case_dir, "latest_buoy_forcing.csv"),
                     check.names = FALSE)
 grid <- read.csv(file.path(case_dir, "grid_metadata.csv"), check.names = FALSE)
 
+# The buoys report UTC. Show the animation using Port Fairy's local civil time
+# while retaining the model's elapsed time from that observation.
+port_fairy_tz <- "Australia/Melbourne"
+buoy_time_utc <- as.POSIXct(
+  sub(" UTC$", "", forcing$time_utc[1]),
+  format = "%Y-%m-%d %H:%M:%S", tz = "UTC"
+)
+if (is.na(buoy_time_utc)) stop("Could not parse the buoy observation time.")
+
 # FUNWAVE writes text grids as Nglob rows (model y) by Mglob columns (model x).
 # R's image() expects z[x, y], so transpose every model output exactly once.
 as_model_xy <- function(z, label = "model field") {
@@ -164,6 +173,38 @@ plot_geographic <- function(r_ll, ..., show_legend = FALSE) {
            col = c("black", "red"), lwd = c(2, NA), pch = c(NA, 16),
            bty = "n", cex = 0.75)
   }
+}
+
+frame_local_time <- function(elapsed_s) {
+  format(buoy_time_utc + elapsed_s, "%d %b %Y %H:%M %Z", tz = port_fairy_tz)
+}
+
+add_wave_frame_annotation <- function(r_ll, elapsed_s) {
+  e <- ext(r_ll)
+  x_span <- xmax(e) - xmin(e)
+  y_span <- ymax(e) - ymin(e)
+  bearing_to <- forcing$peak_direction_to_deg_true[1]
+  angle <- bearing_to * pi / 180
+
+  # The map is in longitude/latitude. Scale the longitude component by the
+  # local latitude before drawing the true-north travel-direction arrow.
+  arrow_y <- 0.13 * y_span
+  arrow_x <- arrow_y * sin(angle) / cos(mean(c(ymin(e), ymax(e))) * pi / 180)
+  arrow_dy <- arrow_y * cos(angle)
+  arrow_x0 <- if (arrow_x >= 0) xmin(e) + 0.08 * x_span else xmax(e) - 0.08 * x_span
+  arrow_y0 <- if (arrow_dy >= 0) ymin(e) + 0.10 * y_span else ymax(e) - 0.10 * y_span
+  arrows(arrow_x0, arrow_y0, arrow_x0 + arrow_x, arrow_y0 + arrow_dy,
+         col = "red", lwd = 3, length = 0.10)
+
+  label <- c(
+    paste("Local:", frame_local_time(elapsed_s)),
+    sprintf("Model +%02d:%02d", elapsed_s %/% 60, elapsed_s %% 60),
+    sprintf("Buoy Hs %.2f m | Tp %.1f s", forcing$hs_m[1], forcing$tp_s[1]),
+    sprintf("Waves from %.0f° (arrow travels to %.0f°)",
+            forcing$peak_direction_from_deg_true[1], bearing_to)
+  )
+  legend("topright", legend = label, bty = "o", bg = rgb(1, 1, 1, 0.82),
+         cex = 0.74, text.col = "black")
 }
 
 elevation_wgs84 <- project(elevation_raster, "EPSG:4326", method = "bilinear")
@@ -343,6 +384,7 @@ if (!length(eta_frames)) {
                     main = sprintf("Free-surface elevation: t = %d s (WGS84)", eta_time[k]),
                     col = hcl.colors(40, "Blue-Red 3"),
                     zlim = eta_animation_limits, show_legend = TRUE)
+    add_wave_frame_annotation(r_ll, eta_time[k])
   }
 }
 ```
@@ -360,6 +402,7 @@ if (!length(final_sixth_indices)) {
                     main = sprintf("Free-surface elevation: t = %d s (WGS84)", eta_time[k]),
                     col = hcl.colors(40, "Blue-Red 3"),
                     zlim = eta_animation_limits, show_legend = TRUE)
+    add_wave_frame_annotation(r_ll, eta_time[k])
   }
 }
 ```

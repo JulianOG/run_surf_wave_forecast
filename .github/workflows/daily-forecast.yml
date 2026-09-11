@@ -125,6 +125,30 @@ jobs:
             "${{ needs.ensure-image.outputs.image }}" \
             -lc 'Rscript -e "rmarkdown::render(\"report/port_fairy_report.Rmd\", output_file=\"index.html\", output_dir=\"site\", quiet=TRUE); rmarkdown::render(\"report/beach_2d_radiation_plots.Rmd\", output_file=\"beach_test.html\", output_dir=\"site\", quiet=TRUE)"'
 
+      - name: Publish stable social assets and latest manifest
+        run: |
+          docker run --rm \
+            --user root \
+            -v "$PWD:/work" \
+            "${{ needs.ensure-image.outputs.image }}" \
+            -lc '
+              set -euo pipefail
+              mkdir -p /work/site/assets
+              copy_asset() {
+                pattern="$1"
+                destination="$2"
+                source="$(find /work/site -type f -name "$pattern" -print -quit)"
+                test -n "$source" || { echo "Missing rendered asset: $pattern" >&2; exit 1; }
+                install -m 0644 "$source" "$destination"
+              }
+              copy_asset "eta-animation-full-*.gif" "/work/site/assets/port-fairy-full.gif"
+              copy_asset "eta-animation-final-sixth-*.gif" "/work/site/assets/port-fairy-final-sixth.gif"
+              copy_asset "hmax-[0-9]*.png" "/work/site/assets/port-fairy-maximum-waveheight.png"
+              Rscript /work/scripts/write_latest_manifest.R \
+                /work/port_fairy/output /work/site \
+                https://julianog.github.io/run_surf_wave_forecast
+            '
+
       - name: Upload full model results temporarily
         uses: actions/upload-artifact@v4
         with:
