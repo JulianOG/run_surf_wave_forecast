@@ -25,7 +25,8 @@ permissions:
 env:
   # GHCR image names must be lowercase. Change this if the repository moves.
   IMAGE_NAME: ghcr.io/julianog/funwave-tvd
-  IMAGE_TAG: v1
+  # v2 adds terra for the MATLAB-to-R diagnostic report.
+  IMAGE_TAG: v2
 
 jobs:
   ensure-image:
@@ -100,7 +101,7 @@ jobs:
             --user root \
             -v "$PWD:/work" \
             "${{ needs.ensure-image.outputs.image }}" \
-            -lc 'Rscript -e "rmarkdown::render(\"report/forecast_report.Rmd\", output_file=\"index.html\", output_dir=\"site\", quiet=TRUE)"'
+            -lc 'Rscript -e "rmarkdown::render(\"report/beach_2d_radiation_plots.Rmd\", output_file=\"index.html\", output_dir=\"site\", quiet=TRUE)"'
 
       - name: Upload full model results temporarily
         uses: actions/upload-artifact@v4

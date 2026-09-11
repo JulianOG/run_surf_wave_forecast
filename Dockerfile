@@ -20,7 +20,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openmpi-bin python3 r-base pandoc \
-    r-cran-ggplot2 r-cran-jsonlite r-cran-knitr r-cran-rmarkdown && \
+    r-cran-ggplot2 r-cran-jsonlite r-cran-knitr r-cran-rmarkdown r-cran-terra && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/funwave/bin/funwave /opt/funwave/bin/funwave

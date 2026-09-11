@@ -1,0 +1,175 @@
+---
+title: "FUNWAVE-TVD beach_2d_radiation diagnostic plots"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M UTC', tz = 'UTC')`"
+output:
+  html_document:
+    toc: true
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(terra)
+
+# The report is knitted from report/, while results/ is at repository level.
+repo_dir <- normalizePath("..", mustWork = TRUE)
+data_dir <- if (dir.exists(file.path(repo_dir, "results"))) {
+  file.path(repo_dir, "results")
+} else {
+  file.path(repo_dir, "example_results")
+}
+
+dx <- 2
+dy <- 2
+jet <- grDevices::colorRampPalette(c("#00007F", "blue", "#00FFFF", "yellow", "red", "#7F0000"))(128)
+
+field_path <- function(name, number = "00000") {
+  file.path(data_dir, paste0(name, "_", number))
+}
+
+read_field <- function(name, number = "00000", required = TRUE) {
+  path <- field_path(name, number)
+  if (!file.exists(path)) {
+    if (required) stop("Required FUNWAVE field is absent: ", basename(path))
+    return(NULL)
+  }
+  as.matrix(utils::read.table(path, header = FALSE))
+}
+
+# FUNWAVE ASCII arrays have row 1 at y = 0. terra stores row 1 at ymax,
+# so reverse rows and flatten row-by-row to retain the MATLAB pcolor orientation.
+as_funwave_rast <- function(z, dx = 2, dy = 2) {
+  r <- terra::rast(nrows = nrow(z), ncols = ncol(z),
+                   xmin = 0, xmax = ncol(z) * dx,
+                   ymin = 0, ymax = nrow(z) * dy)
+  terra::values(r) <- as.vector(t(z[nrow(z):1, , drop = FALSE]))
+  r
+}
+
+plot_field <- function(z, main, units, xlim = c(300, 500), ylim = c(0, 90)) {
+  r <- as_funwave_rast(z, dx, dy)
+  terra::plot(r, col = jet, main = main, xlim = xlim, ylim = ylim,
+              axes = TRUE, plg = list(title = units, cex = 0.8),
+              xlab = "x (m)", ylab = "y (m)")
+}
+
+eta <- read_field("eta")
+mask <- read_field("mask", required = FALSE)
+brk_x <- read_field("BrkSrcX", required = FALSE)
+frc_x <- read_field("FrcInsX", required = FALSE)
+```
+
+## Provenance and input data
+
+This is an R translation of the MATLAB files placed in `reference/`:
+`plot_frc_brk.m`, `plot_balance.m` and `plot_vertical_profile.m`, from the
+FUNWAVE-TVD `beach_2d_radiation` example. It uses base R for plotting and
+`terra` to preserve the spatial-grid orientation.
+
+The report reads the latest workflow's `results/` directory when available;
+otherwise it uses the included `example_results/` files. The example files are
+the 30-second GitHub Actions test output and are not intended as a physical
+forecast.
+
+```{r run-summary}
+meta_path <- file.path(data_dir, "run-metadata.json")
+if (file.exists(meta_path)) {
+  cat(paste(readLines(meta_path), collapse = "\n"))
+}
+```
+
+## Instantaneous elevation, breaking and friction
+
+This reproduces the three-panel layout in `plot_frc_brk.m`. The source MATLAB
+example uses output number 21; the compact workflow produces output number 0,
+so the available field is used here.
+
+```{r instantaneous-plots, fig.width=13, fig.height=4.8}
+old_par <- par(no.readonly = TRUE)
+on.exit(par(old_par), add = TRUE)
+layout(matrix(1:3, nrow = 1))
+plot_field(eta, "instantaneous eta", "eta (m)")
+
+if (is.null(brk_x)) {
+  plot.new(); title("breaking stress in x")
+  text(0.5, 0.5, "BrkSrcX output is not available")
+} else {
+  plot_field(brk_x, "instantaneous breaking stress in x", "(h + eta) Rbx (m2/s2)")
+}
+
+if (is.null(frc_x)) {
+  plot.new(); title("friction stress in x")
+  text(0.5, 0.5, "FrcInsX output is not available")
+} else {
+  plot_field(frc_x, "instantaneous friction stress in x", "-Cd uU (m2/s2)")
+}
+```
+
+## Averaged momentum-balance terms
+
+`plot_balance.m` and the averaged lower panel in `plot_frc_brk.m` require
+`PgrdX`, `FRCX`, `DxSxx`, `DySxy`, `DxUUH`, `DyUVH`, `PgrdY`, `FRCY`,
+`DySyy`, `DxSxy`, `DyVVH`, `DxUVH` and `BrkDissX`. The compact test case does
+not request these fields, so the section activates automatically only when all
+required outputs are present.
+
+```{r balance, fig.width=10, fig.height=7}
+required_x <- c("PgrdX", "FRCX", "DxSxx", "DySxy", "DxUUH", "DyUVH")
+required_y <- c("PgrdY", "FRCY", "DySyy", "DxSxy", "DyVVH", "DxUVH")
+available_balance <- all(vapply(c(required_x, required_y), function(nm)
+  file.exists(field_path(nm)), logical(1)))
+
+if (!available_balance) {
+  cat("Averaged momentum-balance fields were not written by this run.\n")
+} else {
+  ny <- 25
+  x_terms <- lapply(required_x, read_field)
+  names(x_terms) <- required_x
+  y_terms <- lapply(required_y, read_field)
+  names(y_terms) <- required_y
+  old_par <- par(no.readonly = TRUE); on.exit(par(old_par), add = TRUE)
+  par(mfrow = c(2, 1), mar = c(4, 4, 2, 1))
+  matplot(vapply(x_terms, function(z) z[ny, ], numeric(ncol(eta))), type = "l",
+          lty = c(1, 1, 2, 1, 1, 2), col = c("red", "black", "blue", "blue", "cyan4", "cyan4"),
+          xlab = "grid point", ylab = "m2/s2")
+  legend("topleft", legend = names(x_terms), lty = c(1, 1, 2, 1, 1, 2),
+         col = c("red", "black", "blue", "blue", "cyan4", "cyan4"), bty = "n")
+  matplot(vapply(y_terms, function(z) z[ny, ], numeric(ncol(eta))), type = "l",
+          lty = c(1, 1, 2, 1, 2, 1), col = c("red", "black", "blue", "blue", "cyan4", "cyan4"),
+          xlab = "grid point", ylab = "m2/s2")
+  legend("topleft", legend = names(y_terms), lty = c(1, 1, 2, 1, 2, 1),
+         col = c("red", "black", "blue", "blue", "cyan4", "cyan4"), bty = "n")
+}
+```
+
+## Vertical velocity reconstruction
+
+The MATLAB `plot_vertical_profile.m` reconstructs vertical profiles using
+`dep.out`, `Ax`, `Ay`, `Bx` and `By`. It performs the calculation but does not
+actually issue a plotting command. The same reconstruction can be made in R
+when these diagnostic fields are enabled in FUNWAVE; they are not in the
+compact test output.
+
+```{r vertical-profile, fig.width=7, fig.height=5}
+vertical_fields <- c("dep.out", "Ax", "Ay", "Bx", "By", "u", "v", "eta")
+has_vertical <- file.exists(file.path(data_dir, "dep.out")) &&
+  all(vapply(vertical_fields[-1], function(nm) file.exists(field_path(nm)), logical(1)))
+
+if (!has_vertical) {
+  cat("Vertical-profile diagnostics were not written by this run.\n")
+} else {
+  dep <- as.matrix(utils::read.table(file.path(data_dir, "dep.out"), header = FALSE))
+  ax <- read_field("Ax"); ay <- read_field("Ay")
+  bx <- read_field("Bx"); by <- read_field("By")
+  u <- read_field("u"); v <- read_field("v")
+  z_levels <- seq(0, -1, length.out = 10)
+  iy <- ceiling(nrow(dep) / 2); ix <- ceiling(ncol(dep) / 2)
+  z <- -dep[iy, ix] * z_levels
+  za <- -0.5528 * dep[iy, ix] + 0.4472 * eta[iy, ix]
+  U <- u[iy, ix] + (za - z) * ax[iy, ix] + 0.5 * (za^2 - z^2) * bx[iy, ix]
+  V <- v[iy, ix] + (za - z) * ay[iy, ix] + 0.5 * (za^2 - z^2) * by[iy, ix]
+  matplot(cbind(U, V), z, type = "l", lty = 1, col = c("#2166AC", "#B2182B"),
+          xlab = "velocity (m/s)", ylab = "z (m)")
+  legend("bottomright", c("U", "V"), col = c("#2166AC", "#B2182B"), lty = 1, bty = "n")
+}
+```
