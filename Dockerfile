@@ -13,13 +13,13 @@ WORKDIR /opt
 RUN git clone https://github.com/fengyanshi/FUNWAVE-TVD.git funwave-src && \
     cd funwave-src && git checkout "${FUNWAVE_REF}" && \
     make COMPILER=gnu PARALLEL=true MPI=openmpi EXEC=funwave && \
-    install -D -m 0755 funwave-work/funwave /opt/funwave/bin/funwave
+    install -D -m 0755 funwave /opt/funwave/bin/funwave
 
 FROM ubuntu:24.04
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    openmpi-bin r-base pandoc \
+    openmpi-bin python3 r-base pandoc \
     r-cran-ggplot2 r-cran-jsonlite r-cran-knitr r-cran-rmarkdown && \
     rm -rf /var/lib/apt/lists/*
 
