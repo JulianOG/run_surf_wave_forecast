@@ -136,14 +136,12 @@ depth_from_file_rotated <- model_to_rotated_raster(depth_from_file, "depth.txt")
 depth_file_minus_raster <- depth_from_file_rotated - depth_raster
 max_depth_file_delta <- global(abs(depth_file_minus_raster), "max", na.rm = TRUE)[1, 1]
 
-pink_vertices <- read.csv(file.path(case_dir, "pink_domain_rotated_vertices.csv"))
 buoy_ll <- vect(matrix(c(forcing$buoy_lon, forcing$buoy_lat), ncol = 2),
                 type = "points", crs = "EPSG:4326")
 buoy_om <- project(buoy_ll, crs(depth_raster))
 
 # Plot all map products in WGS84, but only after reconstructing them on the
-# native rotated grid. The black outline is the actual rectangular FUNWAVE
-# domain; the magenta polygon is the originally requested pink envelope.
+# native rotated grid. The black outline is the rectangular FUNWAVE domain.
 outline_from_raster <- function(r) {
   vect(rbind(
     c(xmin(r), ymin(r)), c(xmax(r), ymin(r)),
@@ -151,25 +149,20 @@ outline_from_raster <- function(r) {
     c(xmin(r), ymin(r))
   ), type = "polygons", crs = crs(r))
 }
-pink_om <- vect(as.matrix(pink_vertices[, c("x_m", "y_m")]),
-                type = "polygons", crs = crs(depth_raster))
 model_outline_om <- outline_from_raster(depth_raster)
-pink_ll_xy <- crds(project(pink_om, "EPSG:4326"))
 model_outline_ll_xy <- crds(project(model_outline_om, "EPSG:4326"))
 
 plot_geographic <- function(r_ll, ..., show_legend = FALSE) {
   plot(r_ll, ...)
   lines(model_outline_ll_xy[, 1], model_outline_ll_xy[, 2],
         col = "black", lwd = 2)
-  lines(pink_ll_xy[, 1], pink_ll_xy[, 2],
-        col = "magenta", lwd = 3)
   points(crds(buoy_ll)[1, 1], crds(buoy_ll)[1, 2],
          pch = 16, col = "red", cex = 1.25)
   if (show_legend) {
     legend("bottomleft",
-           legend = c("FUNWAVE rectangular grid", "requested pink envelope", "buoy"),
-           col = c("black", "magenta", "red"),
-           lwd = c(2, 3, NA), pch = c(NA, NA, 16), bty = "n", cex = 0.75)
+           legend = c("FUNWAVE grid", "buoy"),
+           col = c("black", "red"), lwd = c(2, NA), pch = c(NA, 16),
+           bty = "n", cex = 0.75)
   }
 }
 
@@ -197,6 +190,9 @@ eta_amplitude <- if (length(eta_frames)) max(vapply(eta_frames, function(z) {
   if (is.finite(value)) value else 0
 }, numeric(1))) else 0
 if (!is.finite(eta_amplitude) || eta_amplitude == 0) eta_amplitude <- 1e-8
+# One common scale is deliberately used for both GIFs and every frame. The
+# final static eta map uses it too, so amplitudes are comparable at a glance.
+eta_animation_limits <- c(-eta_amplitude, eta_amplitude)
 
 # Both animations are conventional six-second looping GIFs. Their frame
 # intervals adapt to the number of saved outputs.
@@ -209,7 +205,7 @@ depth_out <- read_static_model("dep.out")
 
 ## Interpretation first
 
-This is a 20 m, 15-minute grid and forcing diagnostic—not a validated harbour
+This is a 20 m, 30-minute grid and forcing diagnostic—not a validated harbour
 forecast. Each raw FUNWAVE text field is first rebuilt on the exact rotated
 Oblique Mercator grid, then reprojected to WGS84 for geographic plotting.
 
@@ -241,10 +237,7 @@ knitr::kable(forcing, digits = 2)
 
 ## Input bathymetry and depth-file checks
 
-The magenta polygon is the requested pink envelope digitised from the supplied
-figure. FUNWAVE cannot run an arbitrary quadrilateral: it runs the surrounding
-black rectangular grid. The visible gap between those outlines is therefore a
-real domain-design choice, not a plotting shift. All three maps below are
+The black outline shows the rectangular FUNWAVE grid. All three maps below are
 displayed in WGS84 only after the native rotated grid has been reconstructed.
 
 ```{r input-bathy, fig.width=15, fig.height=5}
@@ -325,7 +318,7 @@ if (is.null(eta)) {
   eta_wgs84 <- write_model_output_rasters(eta_rotated, "eta_latest")
   plot_geographic(eta_wgs84, main = "Latest water-surface elevation (WGS84)",
                   col = hcl.colors(40, "Blue-Red 3"),
-                  zlim = symmetric_limits(eta_plot), show_legend = TRUE)
+                  zlim = eta_animation_limits, show_legend = TRUE)
 }
 ```
 
@@ -334,10 +327,10 @@ if (is.null(eta)) {
 Both GIFs use all available eta snapshots at a shared colour scale. Knitr's
 gifski hook creates them directly from this Rmd, after each raw output has been
 reconstructed on the rotated FUNWAVE grid and projected to WGS84. Each GIF
-loops for six seconds: one shows the complete 15-minute run and the other
-shows the final one-sixth (12:30--15:00).
+loops for six seconds: one shows the complete 30-minute run and the other
+shows the final one-sixth (25:00--30:00).
 
-### Full 15-minute simulation
+### Full 30-minute simulation
 
 ```{r eta-animation-full, fig.show='animate', animation.hook='gifski', interval=full_gif_interval, aniopts='loop', fig.width=8, fig.height=6, dpi=100}
 if (!length(eta_frames)) {
@@ -349,7 +342,7 @@ if (!length(eta_frames)) {
     plot_geographic(r_ll,
                     main = sprintf("Free-surface elevation: t = %d s (WGS84)", eta_time[k]),
                     col = hcl.colors(40, "Blue-Red 3"),
-                    zlim = c(-eta_amplitude, eta_amplitude), show_legend = TRUE)
+                    zlim = eta_animation_limits, show_legend = TRUE)
   }
 }
 ```
@@ -366,25 +359,25 @@ if (!length(final_sixth_indices)) {
     plot_geographic(r_ll,
                     main = sprintf("Free-surface elevation: t = %d s (WGS84)", eta_time[k]),
                     col = hcl.colors(40, "Blue-Red 3"),
-                    zlim = c(-eta_amplitude, eta_amplitude), show_legend = TRUE)
+                    zlim = eta_animation_limits, show_legend = TRUE)
   }
 }
 ```
 
-## Maximum wave height over the 15-minute run
+## Maximum wave height over the 30-minute run
 
 FUNWAVE's Hmax is maximum free-surface elevation, not wave height. This
 diagnostic is therefore the cellwise maximum of every WaveHeight output written
 during the run.
 
-```{r hmax, fig.cap='Maximum WaveHeight across all saved 15-minute outputs, reconstructed on the rotated grid and mapped in WGS84.'}
+```{r hmax, fig.cap='Maximum WaveHeight across all saved 30-minute outputs, reconstructed on the rotated grid and mapped in WGS84.'}
 if (is.null(waveheight_max)) {
   plot.new(); text(0.5, 0.5, "No WaveHeight output was produced.")
 } else {
   if (!is.null(mask)) waveheight_max[mask <= 0] <- NA_real_
   wave_rotated <- model_to_rotated_raster(waveheight_max, "maximum WaveHeight")
-  wave_wgs84 <- write_model_output_rasters(wave_rotated, "waveheight_max_15min")
-  plot_geographic(wave_wgs84, main = "Maximum WaveHeight over 15 minutes (WGS84)",
+  wave_wgs84 <- write_model_output_rasters(wave_rotated, "waveheight_max_30min")
+  plot_geographic(wave_wgs84, main = "Maximum WaveHeight over 30 minutes (WGS84)",
                   col = hcl.colors(40, "YlOrRd", rev = TRUE),
                   show_legend = TRUE)
 }
@@ -408,4 +401,3 @@ if (!is.null(hmax)) {
 ```{r provenance}
 knitr::kable(grid)
 ```
-

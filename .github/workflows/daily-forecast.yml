@@ -109,7 +109,7 @@ jobs:
             "${{ needs.ensure-image.outputs.image }}" \
             -lc 'Rscript /work/port_fairy/setup_port_fairy_funwave.R'
 
-      - name: Run the 15-minute Port Fairy FUNWAVE case
+      - name: Run the 30-minute Port Fairy FUNWAVE case
         run: |
           docker run --rm \
             --user root \
@@ -149,4 +149,3 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
-
