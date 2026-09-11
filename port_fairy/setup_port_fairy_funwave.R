@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 
-# Build a first, deliberately coarse (20 m) 5-minute FUNWAVE-TVD case for
+# Build a first, deliberately coarse (20 m) 15-minute FUNWAVE-TVD case for
 # Port Fairy from the Victorian DEM and the newest usable Spotter observation.
 #
 # The model uses an Oblique Mercator grid. Its +x direction is perpendicular to
@@ -87,7 +87,7 @@ pink_corners_ll <- rbind(
 # buoy-side long edge toward the coast. It is normal to the pink long edges.
 model_x_bearing_guess <- 64  # 334 + 90, modulo 360
 dx <- 20                         # metres; use 10 m only after this run works
-total_time <- 300                # seconds = 5 minutes
+total_time <- 900                # seconds = 15 minutes
 plot_intv <- 30                  # seconds
 
 # ----- Latest good / not-yet-evaluated buoy observation --------------------
@@ -323,6 +323,7 @@ grid_info <- data.frame(
   xmin_m = xmin(template), xmax_m = xmax(template),
   ymin_m = ymin(template), ymax_m = ymax(template),
   dx_m = dx, dy_m = dx, Mglob = mglob, Nglob = nglob,
+  total_time_s = total_time, plot_intv_s = plot_intv,
   x_axis = "buoy-side edge to coast", y_axis = "right-handed rotated y"
 )
 write.csv(grid_info, file.path(out_dir, "grid_metadata.csv"), row.names = FALSE)
@@ -331,3 +332,4 @@ message("Created FUNWAVE case in: ", out_dir)
 message("Latest buoy forcing: Hs=", round(hs[i], 2), " m, Tp=", round(tp[i], 1),
         " s, from=", round(dir_from[i]), " degrees, at ", forcing$time_utc)
 message("Grid: ", mglob, " x ", nglob, " at ", dx, " m")
+

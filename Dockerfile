@@ -21,7 +21,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openmpi-bin python3 r-base pandoc \
-    r-cran-ggplot2 r-cran-jsonlite r-cran-knitr r-cran-ncdf4 r-cran-rmarkdown r-cran-terra && \
+    r-cran-ggplot2 r-cran-gifski r-cran-jsonlite r-cran-knitr r-cran-ncdf4 r-cran-rmarkdown r-cran-terra && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/funwave/bin/funwave /opt/funwave/bin/funwave
@@ -30,3 +30,4 @@ COPY --from=builder /opt/funwave-src/simple_cases/beach_2d_radiation /opt/funwav
 ENV PATH="/opt/funwave/bin:${PATH}"
 WORKDIR /work
 ENTRYPOINT ["/bin/bash"]
+
