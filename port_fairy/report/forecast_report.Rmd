@@ -1,0 +1,57 @@
+---
+title: "FUNWAVE-TVD daily test forecast"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M UTC', tz = 'UTC')`"
+output:
+  html_document:
+    self_contained: true
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(jsonlite)
+library(ggplot2)
+
+# rmarkdown renders this file with report/ as its working directory.
+# Resolve the repository-level results directory rather than assuming cwd.
+results_dir <- normalizePath("../results", mustWork = TRUE)
+metadata <- fromJSON(file.path(results_dir, "run-metadata.json"))
+eta_files <- list.files(results_dir, pattern = "^eta_", full.names = TRUE)
+stopifnot(length(eta_files) > 0)
+eta_file <- tail(sort(eta_files), 1)
+eta <- as.matrix(read.table(eta_file, header = FALSE))
+```
+
+This page is generated automatically after the daily FUNWAVE-TVD test. Full
+model files are retained as a GitHub Actions artifact for seven days; only this
+small HTML report is published.
+
+## Simulation log
+
+```{r metadata}
+knitr::kable(data.frame(
+  Item = c("Model", "Test case", "Started (UTC)", "Finished (UTC)", "MPI processes", "Files written"),
+  Value = c(metadata$model, metadata$test_case, metadata$started_at_utc,
+            metadata$finished_at_utc, metadata$mpi_processes,
+            paste(metadata$result_files, collapse = ", "))
+))
+```
+
+## Final free-surface elevation
+
+The plot reads the final `eta_*` field written by FUNWAVE-TVD. This example
+uses a deliberately short 30-second, two-process test case; replace the case
+preparation script when operational forcing is available.
+
+```{r eta-plot, fig.width=9, fig.height=4.2}
+eta_df <- expand.grid(x = seq_len(ncol(eta)), y = seq_len(nrow(eta)))
+eta_df$eta_m <- as.vector(eta)
+
+ggplot(eta_df, aes(x, y, fill = eta_m)) +
+  geom_raster() +
+  coord_equal(expand = FALSE) +
+  scale_fill_gradient2(low = "#2166ac", mid = "white", high = "#b2182b",
+                       midpoint = 0, name = "eta (m)") +
+  labs(x = "Grid x", y = "Grid y") +
+  theme_minimal(base_size = 12)
+```

@@ -38,6 +38,16 @@ The live report will be at:
 - GitHub-hosted runners are CPU-only. Use a self-hosted GPU or HPC runner for
   GPU FUNWAVE-TVD and larger operational domains.
 
+## Port Fairy coarse latest-buoy case
+
+`port_fairy/` contains a 20 m, five-minute first-pass setup for the supplied
+pink Port Fairy domain. It crops the local Victorian DEM, reads the newest
+usable IMOS Spotter observation, writes `DEPTH_TYPE = DATA` input and runs a
+FUNWAVE `WK_IRR` irregular-wave source along the buoy-side edge of a rotated
+local grid. See
+[`port_fairy/README.md`](port_fairy/README.md) for the two local files to copy
+into `port_fairy/data/`, build/run commands, and important forcing limitations.
+
 ## Plot translation
 
 `report/beach_2d_radiation_plots.Rmd` is an R translation of the MATLAB

@@ -2,4 +2,6 @@ results/
 run_case/
 site/
 example_results/
+port_fairy/data/
+port_fairy/output/
 .Rhistory

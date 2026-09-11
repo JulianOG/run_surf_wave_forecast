@@ -1,0 +1,146 @@
+name: Daily FUNWAVE test and report
+
+on:
+  schedule:
+    # 03:17 UTC daily. GitHub Actions schedules can be delayed during busy periods.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      rebuild_image:
+        description: Rebuild the FUNWAVE image even if it already exists
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: daily-funwave-forecast
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  pages: write
+  id-token: write
+
+env:
+  # GHCR image names must be lowercase. Change this if the repository moves.
+  IMAGE_NAME: ghcr.io/julianog/funwave-tvd
+  # v4 adds R ncdf4, required to download/read the Port Fairy IMOS buoy file.
+  IMAGE_TAG: v4
+
+jobs:
+  ensure-image:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      build_needed: ${{ steps.check.outputs.build_needed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check whether the FUNWAVE image exists
+        id: check
+        env:
+          FORCE_REBUILD: ${{ inputs.rebuild_image || false }}
+        run: |
+          if [ "$FORCE_REBUILD" = "true" ] || ! docker manifest inspect "$IMAGE_NAME:$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.check.outputs.build_needed == 'true'
+
+      - name: Build and publish FUNWAVE image
+        if: steps.check.outputs.build_needed == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          build-args: |
+            FUNWAVE_REF=b4c322e7582035ee19df8e6409a3dfedaff1cb96
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - id: image
+        run: echo "image=$IMAGE_NAME:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+  run-and-render:
+    needs: ensure-image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run the compact upstream FUNWAVE test case
+        run: |
+          mkdir -p results site
+          docker run --rm \
+            --user root \
+            -v "$PWD:/work" \
+            "${{ needs.ensure-image.outputs.image }}" \
+            /work/scripts/run_test_case.sh
+
+      - name: Build the rotated Port Fairy case from bathymetry and buoy data
+        run: |
+          docker run --rm \
+            --user root \
+            -v "$PWD:/work" \
+            "${{ needs.ensure-image.outputs.image }}" \
+            -lc 'Rscript /work/port_fairy/setup_port_fairy_funwave.R'
+
+      - name: Run the 5-minute Port Fairy FUNWAVE case
+        run: |
+          mkdir -p port_fairy/output/results
+          docker run --rm \
+            --user root \
+            -v "$PWD/port_fairy/output:/work" \
+            "${{ needs.ensure-image.outputs.image }}" \
+            -lc 'mpirun --allow-run-as-root -np 2 funwave input.txt'
+
+      - name: Render Port Fairy and compact-test HTML pages
+        run: |
+          docker run --rm \
+            --user root \
+            -v "$PWD:/work" \
+            "${{ needs.ensure-image.outputs.image }}" \
+            -lc 'Rscript -e "rmarkdown::render(\"report/port_fairy_report.Rmd\", output_file=\"index.html\", output_dir=\"site\", quiet=TRUE); rmarkdown::render(\"report/beach_2d_radiation_plots.Rmd\", output_file=\"beach_test.html\", output_dir=\"site\", quiet=TRUE)"'
+
+      - name: Upload full model results temporarily
+        uses: actions/upload-artifact@v4
+        with:
+          name: funwave-results-${{ github.run_id }}
+          path: |
+            results/
+            port_fairy/output/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy-pages:
+    needs: run-and-render
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
