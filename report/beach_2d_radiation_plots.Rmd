@@ -23,11 +23,15 @@ dx <- 2
 dy <- 2
 jet <- grDevices::colorRampPalette(c("#00007F", "blue", "#00FFFF", "yellow", "red", "#7F0000"))(128)
 
-field_path <- function(name, number = "00000") {
+available_numbers <- sub("^eta_", "", list.files(data_dir, pattern = "^eta_[0-9]{5}$"))
+stopifnot(length(available_numbers) > 0)
+instant_number <- tail(sort(available_numbers), 1)
+
+field_path <- function(name, number = instant_number) {
   file.path(data_dir, paste0(name, "_", number))
 }
 
-read_field <- function(name, number = "00000", required = TRUE) {
+read_field <- function(name, number = instant_number, required = TRUE) {
   path <- field_path(name, number)
   if (!file.exists(path)) {
     if (required) stop("Required FUNWAVE field is absent: ", basename(path))
@@ -53,7 +57,7 @@ plot_field <- function(z, main, units, xlim = c(300, 500), ylim = c(0, 90)) {
               xlab = "x (m)", ylab = "y (m)")
 }
 
-eta <- read_field("eta")
+eta <- read_field("eta", instant_number)
 mask <- read_field("mask", required = FALSE)
 brk_x <- read_field("BrkSrcX", required = FALSE)
 frc_x <- read_field("FrcInsX", required = FALSE)
@@ -69,7 +73,8 @@ FUNWAVE-TVD `beach_2d_radiation` example. It uses base R for plotting and
 The report reads the latest workflow's `results/` directory when available;
 otherwise it uses the included `example_results/` files. The example files are
 the 30-second GitHub Actions test output and are not intended as a physical
-forecast.
+forecast. The workflow now runs a 300-second diagnostic case, which passes the
+180-second steady-state threshold and generates the averaged radiation terms.
 
 ```{r run-summary}
 meta_path <- file.path(data_dir, "run-metadata.json")
@@ -81,8 +86,8 @@ if (file.exists(meta_path)) {
 ## Instantaneous elevation, breaking and friction
 
 This reproduces the three-panel layout in `plot_frc_brk.m`. The source MATLAB
-example uses output number 21; the compact workflow produces output number 0,
-so the available field is used here.
+example uses output number 21; this report detects and uses the latest available
+instantaneous output (`r instant_number`).
 
 ```{r instantaneous-plots, fig.width=13, fig.height=4.8}
 old_par <- par(no.readonly = TRUE)
@@ -116,16 +121,18 @@ required outputs are present.
 ```{r balance, fig.width=10, fig.height=7}
 required_x <- c("PgrdX", "FRCX", "DxSxx", "DySxy", "DxUUH", "DyUVH")
 required_y <- c("PgrdY", "FRCY", "DySyy", "DxSxy", "DyVVH", "DxUVH")
-available_balance <- all(vapply(c(required_x, required_y), function(nm)
-  file.exists(field_path(nm)), logical(1)))
+balance_numbers <- sub("^PgrdX_", "", list.files(data_dir, pattern = "^PgrdX_[0-9]{5}$"))
+balance_number <- if (length(balance_numbers)) tail(sort(balance_numbers), 1) else NA_character_
+available_balance <- !is.na(balance_number) && all(vapply(c(required_x, required_y), function(nm)
+  file.exists(field_path(nm, balance_number)), logical(1)))
 
 if (!available_balance) {
   cat("Averaged momentum-balance fields were not written by this run.\n")
 } else {
   ny <- 25
-  x_terms <- lapply(required_x, read_field)
+  x_terms <- lapply(required_x, read_field, number = balance_number)
   names(x_terms) <- required_x
-  y_terms <- lapply(required_y, read_field)
+  y_terms <- lapply(required_y, read_field, number = balance_number)
   names(y_terms) <- required_y
   old_par <- par(no.readonly = TRUE); on.exit(par(old_par), add = TRUE)
   par(mfrow = c(2, 1), mar = c(4, 4, 2, 1))

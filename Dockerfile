@@ -12,7 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /opt
 RUN git clone https://github.com/fengyanshi/FUNWAVE-TVD.git funwave-src && \
     cd funwave-src && git checkout "${FUNWAVE_REF}" && \
-    make COMPILER=gnu PARALLEL=true MPI=openmpi EXEC=funwave && \
+    # AB_OUTPUT writes Ax, Ay, Bx and By required by the vertical-profile diagnostic.
+    make COMPILER=gnu PARALLEL=true MPI=openmpi EXEC=funwave FLAG_12=-DAB_OUTPUT && \
     install -D -m 0755 funwave /opt/funwave/bin/funwave
 
 FROM ubuntu:24.04

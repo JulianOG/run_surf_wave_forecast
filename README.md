@@ -34,7 +34,7 @@ The live report will be at:
 - Replace `scripts/run_test_case.sh` with logic that downloads/prepares the
   forecast bathymetry and boundary conditions.
 - Change the `FUNWAVE_REF` commit SHA only after validating it, then update the
-  image tag (for example `v3`) to force a new image build.
+  image tag (for example `v4`) to force a new image build.
 - GitHub-hosted runners are CPU-only. Use a self-hosted GPU or HPC runner for
   GPU FUNWAVE-TVD and larger operational domains.
 
@@ -45,6 +45,11 @@ diagnostic scripts in `reference/`. It renders the instantaneous three-panel
 plot from the fields produced by the workflow. The averaged momentum-balance
 and vertical-profile sections are activated when the corresponding optional
 FUNWAVE outputs are requested.
+
+The workflow's `v3` image compiles FUNWAVE with `AB_OUTPUT`, which writes
+`Ax`, `Ay`, `Bx` and `By`, and runs for 300 seconds. This passes the bundled
+case's 180-second steady-state threshold and produces the radiation and
+momentum-balance fields required by the translated MATLAB diagnostic plots.
 
 `example_results/` in the delivery ZIP contains one compact test run so that
 the Rmd can be rendered locally. It is ignored by Git and is not intended for
