@@ -202,8 +202,8 @@ if (!is.finite(eta_amplitude) || eta_amplitude == 0) eta_amplitude <- 1e-8
 # intervals adapt to the number of saved outputs.
 gif_duration_s <- 6
 full_gif_interval <- gif_duration_s / max(1, length(eta_frames))
-late_eta_indices <- which(eta_time >= 0.75 * grid$total_time_s)
-late_gif_interval <- gif_duration_s / max(1, length(late_eta_indices))
+final_sixth_indices <- which(eta_time >= (5 / 6) * grid$total_time_s)
+final_sixth_gif_interval <- gif_duration_s / max(1, length(final_sixth_indices))
 depth_out <- read_static_model("dep.out")
 ```
 
@@ -335,7 +335,7 @@ Both GIFs use all available eta snapshots at a shared colour scale. Knitr's
 gifski hook creates them directly from this Rmd, after each raw output has been
 reconstructed on the rotated FUNWAVE grid and projected to WGS84. Each GIF
 loops for six seconds: one shows the complete 15-minute run and the other
-shows the final quarter (11:15--15:00).
+shows the final one-sixth (12:30--15:00).
 
 ### Full 15-minute simulation
 
@@ -354,13 +354,13 @@ if (!length(eta_frames)) {
 }
 ```
 
-### Final quarter of the simulation
+### Final one-sixth of the simulation
 
-```{r eta-animation-final-quarter, fig.show='animate', animation.hook='gifski', interval=late_gif_interval, aniopts='loop', fig.width=8, fig.height=6, dpi=100}
-if (!length(late_eta_indices)) {
-  plot.new(); text(0.5, 0.5, "No late-simulation eta output was produced.")
+```{r eta-animation-final-sixth, fig.show='animate', animation.hook='gifski', interval=final_sixth_gif_interval, aniopts='loop', fig.width=8, fig.height=6, dpi=100}
+if (!length(final_sixth_indices)) {
+  plot.new(); text(0.5, 0.5, "No final-one-sixth eta output was produced.")
 } else {
-  for (k in late_eta_indices) {
+  for (k in final_sixth_indices) {
     r_om <- model_to_rotated_raster(eta_frames[[k]], basename(eta_paths[k]))
     r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
     plot_geographic(r_ll,
@@ -408,4 +408,5 @@ if (!is.null(hmax)) {
 ```{r provenance}
 knitr::kable(grid)
 ```
+
 

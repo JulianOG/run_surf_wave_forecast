@@ -19,9 +19,12 @@ RUN git clone https://github.com/fengyanshi/FUNWAVE-TVD.git funwave-src && \
 FROM ubuntu:24.04
 ARG DEBIAN_FRONTEND=noninteractive
 
+# gifski has no Ubuntu 24.04 r-cran package. Its CRAN source package requires
+# Cargo and rustc, so install those and compile the pinned package once here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    openmpi-bin python3 r-base pandoc \
-    r-cran-ggplot2 r-cran-gifski r-cran-jsonlite r-cran-knitr r-cran-ncdf4 r-cran-rmarkdown r-cran-terra && \
+    cargo rustc openmpi-bin python3 r-base pandoc \
+    r-cran-ggplot2 r-cran-jsonlite r-cran-knitr r-cran-ncdf4 r-cran-rmarkdown r-cran-terra && \
+    Rscript -e 'install.packages("https://cran.r-project.org/src/contrib/gifski_1.32.0-2.tar.gz", repos = NULL, type = "source")' && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/funwave/bin/funwave /opt/funwave/bin/funwave
