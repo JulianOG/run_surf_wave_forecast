@@ -134,6 +134,8 @@ jobs:
             -lc '
               set -euo pipefail
               mkdir -p /work/site/assets
+              echo "Rendered social candidates:"
+              find /work/site -type f \( -name "*.gif" -o -name "hmax*.png" \) -printf "%P\\n" || true
               copy_asset() {
                 pattern="$1"
                 destination="$2"
@@ -141,9 +143,9 @@ jobs:
                 test -n "$source" || { echo "Missing rendered asset: $pattern" >&2; exit 1; }
                 install -m 0644 "$source" "$destination"
               }
-              copy_asset "eta-animation-full-*.gif" "/work/site/assets/port-fairy-full.gif"
-              copy_asset "eta-animation-final-sixth-*.gif" "/work/site/assets/port-fairy-final-sixth.gif"
-              copy_asset "hmax-[0-9]*.png" "/work/site/assets/port-fairy-maximum-waveheight.png"
+              copy_asset "eta-animation-full*.gif" "/work/site/assets/port-fairy-full.gif"
+              copy_asset "eta-animation-final-sixth*.gif" "/work/site/assets/port-fairy-final-sixth.gif"
+              copy_asset "hmax*.png" "/work/site/assets/port-fairy-maximum-waveheight.png"
               Rscript /work/scripts/write_latest_manifest.R \
                 /work/port_fairy/output /work/site \
                 https://julianog.github.io/run_surf_wave_forecast

@@ -31,5 +31,9 @@ Tp, observed *from* direction, and a red arrow in the corresponding wave
 travel direction. `latest.json` marks only QC 1 observations as eligible for
 automatic public posting.
 
+The asset-copy step accepts both of knitr's possible labelled-GIF names (with
+or without the `-1` frame suffix) and prints the candidate names in the Action
+log if a future naming change needs investigation.
+
 The internal model-grid geometry is unchanged; only the report’s magenta
 display polygon has been removed.
