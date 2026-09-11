@@ -323,7 +323,7 @@ if (is.null(eta)) {
   if (!is.null(mask)) eta_plot[mask <= 0] <- NA_real_
   eta_rotated <- model_to_rotated_raster(eta_plot, "eta")
   eta_wgs84 <- write_model_output_rasters(eta_rotated, "eta_latest")
-  plot_geographic(eta_wgs84, "Latest water-surface elevation (WGS84)",
+  plot_geographic(eta_wgs84, main = "Latest water-surface elevation (WGS84)",
                   col = hcl.colors(40, "Blue-Red 3"),
                   zlim = symmetric_limits(eta_plot), show_legend = TRUE)
 }
@@ -384,7 +384,7 @@ if (is.null(waveheight_max)) {
   if (!is.null(mask)) waveheight_max[mask <= 0] <- NA_real_
   wave_rotated <- model_to_rotated_raster(waveheight_max, "maximum WaveHeight")
   wave_wgs84 <- write_model_output_rasters(wave_rotated, "waveheight_max_15min")
-  plot_geographic(wave_wgs84, "Maximum WaveHeight over 15 minutes (WGS84)",
+  plot_geographic(wave_wgs84, main = "Maximum WaveHeight over 15 minutes (WGS84)",
                   col = hcl.colors(40, "YlOrRd", rev = TRUE),
                   show_legend = TRUE)
 }
@@ -397,7 +397,7 @@ if (!is.null(hmax)) {
   if (!is.null(mask)) hmax[mask <= 0] <- NA_real_
   hmax_rotated <- model_to_rotated_raster(hmax, "Hmax")
   hmax_wgs84 <- write_model_output_rasters(hmax_rotated, "eta_max")
-  plot_geographic(hmax_wgs84, "Maximum free-surface elevation, Hmax (WGS84)",
+  plot_geographic(hmax_wgs84, main = "Maximum free-surface elevation, Hmax (WGS84)",
                   col = hcl.colors(40, "Blue-Red 3"),
                   zlim = symmetric_limits(hmax), show_legend = TRUE)
 }
@@ -408,5 +408,4 @@ if (!is.null(hmax)) {
 ```{r provenance}
 knitr::kable(grid)
 ```
-
 
