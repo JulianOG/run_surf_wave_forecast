@@ -105,12 +105,11 @@ jobs:
 
       - name: Run the 5-minute Port Fairy FUNWAVE case
         run: |
-          mkdir -p port_fairy/output/results
           docker run --rm \
             --user root \
             -v "$PWD/port_fairy/output:/work" \
             "${{ needs.ensure-image.outputs.image }}" \
-            -lc 'mpirun --allow-run-as-root -np 2 funwave input.txt'
+            -lc 'mkdir -p results && mpirun --allow-run-as-root -np 2 funwave input.txt'
 
       - name: Render Port Fairy and compact-test HTML pages
         run: |
