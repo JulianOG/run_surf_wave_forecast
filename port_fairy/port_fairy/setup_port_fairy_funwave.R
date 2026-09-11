@@ -29,6 +29,8 @@ if (!file.exists(bathy_file)) {
 # Try this month, then the two preceding months. This avoids failing on the
 # first day of a month before the newest near-real-time file is available.
 download_buoy_month <- function(month_start, data_dir) {
+  # `for (x in Date_vector)` drops the Date class in R, so coerce defensively.
+  month_start <- as.Date(month_start, origin = "1970-01-01")
   ymd <- format(month_start, "%Y%m01")
   yyyy <- format(month_start, "%Y")
   url <- paste0(
@@ -62,8 +64,8 @@ month_starts <- seq(
   by = "-1 month", length.out = 3
 )
 buoy_file <- NULL
-for (month_start in month_starts) {
-  buoy_file <- download_buoy_month(month_start, data_dir)
+for (month_index in seq_along(month_starts)) {
+  buoy_file <- download_buoy_month(month_starts[month_index], data_dir)
   if (!is.null(buoy_file)) break
 }
 if (is.null(buoy_file)) {
@@ -98,7 +100,9 @@ read_buoy <- function(name) {
   x
 }
 
-time_days <- read_buoy("TIME")
+# In this IMOS file TIME is a dimension coordinate, not a variable, so it is
+# exposed by ncdf4 through nc$dim rather than ncvar_get().
+time_days <- nc$dim[["TIME"]]$vals
 time_utc <- as.POSIXct("1950-01-01 00:00:00", tz = "UTC") + time_days * 86400
 hs <- read_buoy("WSSH")
 tp <- read_buoy("WPPE")
@@ -134,13 +138,11 @@ buoy_ll <- vect(matrix(c(ncvar_get(nc, "LONGITUDE")[i],
                 crs = "EPSG:4326")
 buoy_om <- project(buoy_ll, omerc_crs)
 
-# Crop only the needed area in the native DEM CRS, then warp onto a rectangle
-# in the rotated CRS. Do not mask to the original polygon: FUNWAVE requires a
-# full rectangular grid and the pink quadrilateral is the visual guide for it.
-domain_poly_native <- project(domain_poly_ll, crs(bathy))
-bathy_crop <- crop(bathy, domain_poly_native, snap = "out")
+# Warp the complete 50 MB DEM directly onto the rotated rectangular template.
+# Cropping to the oblique pink polygon first creates NoData triangular corners
+# after reprojection; FUNWAVE instead needs a complete rectangular depth grid.
 template <- rast(ext(domain_poly_om), resolution = dx, crs = omerc_crs)
-elevation <- project(bathy_crop, template, method = "bilinear")
+elevation <- project(bathy, template, method = "bilinear")
 
 # DEM elevations are positive on land and negative below datum. FUNWAVE uses
 # positive water depth.  Land/NA cells are retained as 0 m so its wet-dry mask
@@ -187,7 +189,8 @@ write.csv(forcing, file.path(out_dir, "latest_buoy_forcing.csv"), row.names = FA
 mglob <- nrow(depth_funwave)     # x: east -> west
 nglob <- ncol(depth_funwave)     # y: south -> north
 write.table(
-  depth_funwave, file.path(out_dir, "depth.txt"),
+  # FUNWAVE reads one y row at a time: Nglob text rows, each with Mglob values.
+  t(depth_funwave), file.path(out_dir, "depth.txt"),
   row.names = FALSE, col.names = FALSE, quote = FALSE
 )
 writeRaster(depth_gis, file.path(out_dir, "depth_20m_positive_water_depth.tif"),
