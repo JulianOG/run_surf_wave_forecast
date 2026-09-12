@@ -135,9 +135,13 @@ add_wave_frame_annotation <- function(r_ll, elapsed_s) {
 mask_path <- file.path(results_dir, "mask_00000")
 mask <- if (file.exists(mask_path)) read_text_model(mask_path, "mask") else NULL
 eta_paths <- list.files(results_dir, pattern = "^eta_[0-9]{5}$", full.names = TRUE)
-eta_time <- as.integer(sub("^eta_", "", basename(eta_paths)))
-eta_paths <- eta_paths[order(eta_time)]
-eta_time <- sort(eta_time)
+# The FUNWAVE suffix is an output-file number, not time in seconds.  Convert
+# it with PLOT_INTV before selecting the final sixth or annotating a frame.
+eta_file_number <- as.integer(sub("^eta_", "", basename(eta_paths)))
+eta_order <- order(eta_file_number)
+eta_paths <- eta_paths[eta_order]
+eta_file_number <- eta_file_number[eta_order]
+eta_time <- eta_file_number * grid$plot_intv_s
 if (!length(eta_paths)) stop("No eta outputs exist; cannot make social GIFs.")
 
 eta_frames <- lapply(eta_paths, function(path) {

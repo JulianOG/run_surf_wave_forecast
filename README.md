@@ -1,43 +1,28 @@
-# Port Fairy social assets — standalone-file fix
+# Port Fairy GIF timing fix
 
-Copy these files over the matching files in the root of the
-run_surf_wave_forecast repository, then commit and use Actions > Daily FUNWAVE
-test and report > Run workflow.
+This is a **two-file patch only**. It contains no starter ZIP, no DEM and no
+other repository files.
 
-This update keeps the verified GIF Docker image and:
-- changes the coarse 20 m simulation to 30 minutes;
-- rebuilds raw FUNWAVE matrices as georeferenced rotated Omerc rasters, then
-  projects them to WGS84 for the HTML maps;
-- writes rotated and WGS84 GeoTIFFs for eta, maximum WaveHeight and Hmax;
-- uses one fixed elevation colour scale for all frames in both looping
-  six-second Rmd GIFs: the full 30-minute eta run and the final one-sixth
-  (25:00--30:00);
-- maps the cellwise maximum of every `WaveHeight` output over the 30-minute
-  run (rather than using FUNWAVE `Hmax`, which is elevation);
-- removes the magenta polygon from the report maps while retaining the black
-  FUNWAVE grid outline and the buoy marker;
-- uses Docker image tag v7, so GitHub Actions builds the image once with the
-  verified CRAN `gifski` package.
+Overlay the contents of this folder onto the root of
+`JulianOG/run_surf_wave_forecast`, replacing:
 
-It also makes a separate social-feed bot possible without granting it access to
-this modelling repository. After a successful render, the workflow publishes:
+- `scripts/render_social_assets.R`
+- `report/port_fairy_report.Rmd`
 
-- `latest.json` at the GitHub Pages root, containing the buoy, model and QC
-  metadata plus stable public asset URLs;
-- `assets/port-fairy-full.gif` and `assets/port-fairy-final-sixth.gif`;
-- `assets/port-fairy-maximum-waveheight.png`.
+Then commit, push and run **Daily FUNWAVE test and report**.
 
-The GIF frames show Port Fairy local date/time, model elapsed time, buoy Hs,
-Tp, observed *from* direction, and a red arrow in the corresponding wave
-travel direction. `latest.json` marks only QC 1 observations as eligible for
-automatic public posting.
+## What it fixes
 
-The prior failure, `Missing rendered asset: eta-animation-full*.gif`, happened
-because R Markdown embeds animated figures inside `index.html`; no standalone
-GIF exists in `site/` to copy. The new `scripts/render_social_assets.R` instead
-renders the two six-second GIFs and the maximum-WaveHeight PNG explicitly into
-`site/assets/`, then `write_latest_manifest.R` verifies them before publishing
-`latest.json`.
+FUNWAVE names fields `eta_00000`, `eta_00001`, … using sequential output-file
+numbers. With `PLOT_INTV = 30`, file `eta_00050` represents model time
+1500 seconds, not 50 seconds. The previous code compared the file number with
+1500 seconds, so it selected no frames for the final one-sixth GIF.
 
-The internal model-grid geometry is unchanged; only the report’s magenta
-display polygon has been removed.
+The corrected code calculates model time as:
+
+```r
+eta_time <- eta_file_number * grid$plot_intv_s
+```
+
+For the 30-minute run this selects files 50--59 for the final 5-minute GIF.
+It also corrects the elapsed-time labels in both animations and in the report.
