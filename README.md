@@ -1,4 +1,4 @@
-# Port Fairy social-manifest and annotated-animation update
+# Port Fairy social assets — standalone-file fix
 
 Copy these files over the matching files in the root of the
 run_surf_wave_forecast repository, then commit and use Actions > Daily FUNWAVE
@@ -16,7 +16,8 @@ This update keeps the verified GIF Docker image and:
   run (rather than using FUNWAVE `Hmax`, which is elevation);
 - removes the magenta polygon from the report maps while retaining the black
   FUNWAVE grid outline and the buoy marker;
-- uses the verified Docker image tag v6.
+- uses Docker image tag v7, so GitHub Actions builds the image once with the
+  verified CRAN `gifski` package.
 
 It also makes a separate social-feed bot possible without granting it access to
 this modelling repository. After a successful render, the workflow publishes:
@@ -31,9 +32,12 @@ Tp, observed *from* direction, and a red arrow in the corresponding wave
 travel direction. `latest.json` marks only QC 1 observations as eligible for
 automatic public posting.
 
-The asset-copy step accepts both of knitr's possible labelled-GIF names (with
-or without the `-1` frame suffix) and prints the candidate names in the Action
-log if a future naming change needs investigation.
+The prior failure, `Missing rendered asset: eta-animation-full*.gif`, happened
+because R Markdown embeds animated figures inside `index.html`; no standalone
+GIF exists in `site/` to copy. The new `scripts/render_social_assets.R` instead
+renders the two six-second GIFs and the maximum-WaveHeight PNG explicitly into
+`site/assets/`, then `write_latest_manifest.R` verifies them before publishing
+`latest.json`.
 
 The internal model-grid geometry is unchanged; only the report’s magenta
 display polygon has been removed.

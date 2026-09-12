@@ -25,8 +25,9 @@ permissions:
 env:
   # GHCR image names must be lowercase. Change this if the repository moves.
   IMAGE_NAME: ghcr.io/julianog/funwave-tvd
-  # v6 verifies R gifski during the Docker build and forces a clean image.
-  IMAGE_TAG: v6
+  # v7 includes the standalone social-asset renderer.  Bump this tag so the
+  # image is rebuilt once and contains gifski from CRAN.
+  IMAGE_TAG: v7
 
 jobs:
   ensure-image:
@@ -125,7 +126,7 @@ jobs:
             "${{ needs.ensure-image.outputs.image }}" \
             -lc 'Rscript -e "rmarkdown::render(\"report/port_fairy_report.Rmd\", output_file=\"index.html\", output_dir=\"site\", quiet=TRUE); rmarkdown::render(\"report/beach_2d_radiation_plots.Rmd\", output_file=\"beach_test.html\", output_dir=\"site\", quiet=TRUE)"'
 
-      - name: Publish stable social assets and latest manifest
+      - name: Generate stable social assets and latest manifest
         run: |
           docker run --rm \
             --user root \
@@ -134,21 +135,16 @@ jobs:
             -lc '
               set -euo pipefail
               mkdir -p /work/site/assets
-              echo "Rendered social candidates:"
-              find /work/site -type f \( -name "*.gif" -o -name "hmax*.png" \) -printf "%P\\n" || true
-              copy_asset() {
-                pattern="$1"
-                destination="$2"
-                source="$(find /work/site -type f -name "$pattern" -print -quit)"
-                test -n "$source" || { echo "Missing rendered asset: $pattern" >&2; exit 1; }
-                install -m 0644 "$source" "$destination"
-              }
-              copy_asset "eta-animation-full*.gif" "/work/site/assets/port-fairy-full.gif"
-              copy_asset "eta-animation-final-sixth*.gif" "/work/site/assets/port-fairy-final-sixth.gif"
-              copy_asset "hmax*.png" "/work/site/assets/port-fairy-maximum-waveheight.png"
+              # R Markdown embeds animated figures in index.html.  Generate
+              # independent stable files here instead of looking for an
+              # embedded figure under site/.
+              Rscript /work/scripts/render_social_assets.R \
+                /work/port_fairy/output /work/site
               Rscript /work/scripts/write_latest_manifest.R \
                 /work/port_fairy/output /work/site \
                 https://julianog.github.io/run_surf_wave_forecast
+              echo "Published social assets:"
+              find /work/site/assets -maxdepth 1 -type f -printf "%f\\n"
             '
 
       - name: Upload full model results temporarily
