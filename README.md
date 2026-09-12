@@ -1,28 +1,16 @@
-# Port Fairy GIF timing fix
+# Port Fairy maximum-map fix
 
-This is a **two-file patch only**. It contains no starter ZIP, no DEM and no
-other repository files.
-
-Overlay the contents of this folder onto the root of
-`JulianOG/run_surf_wave_forecast`, replacing:
+Replace only this file in the repository:
 
 - `scripts/render_social_assets.R`
-- `report/port_fairy_report.Rmd`
 
-Then commit, push and run **Daily FUNWAVE test and report**.
+The pinned FUNWAVE-TVD executable has no `WaveHeight` output option. The old
+script therefore failed while looking for files that it can never produce.
 
-## What it fixes
+The replacement uses FUNWAVE's supported `Hmax` output and labels it correctly
+as **maximum free-surface elevation (Hmax)**. This is not presented as maximum
+individual-wave height. If an older executable does not write `Hmax`, it falls
+back to the maximum saved eta snapshot and labels that clearly.
 
-FUNWAVE names fields `eta_00000`, `eta_00001`, … using sequential output-file
-numbers. With `PLOT_INTV = 30`, file `eta_00050` represents model time
-1500 seconds, not 50 seconds. The previous code compared the file number with
-1500 seconds, so it selected no frames for the final one-sixth GIF.
-
-The corrected code calculates model time as:
-
-```r
-eta_time <- eta_file_number * grid$plot_intv_s
-```
-
-For the 30-minute run this selects files 50--59 for the final 5-minute GIF.
-It also corrects the elapsed-time labels in both animations and in the report.
+Commit and push this one file, then rerun the workflow. No Docker rebuild is
+needed.
