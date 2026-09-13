@@ -22,7 +22,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 # The runtime image is intentionally limited to FUNWAVE/MPI. R packages are
 # installed on the GitHub Actions runner for each report build.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates openmpi-bin python3 && \
+    ca-certificates openmpi-bin python3 libgfortran5 && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/funwave/bin/funwave /opt/funwave/bin/funwave
