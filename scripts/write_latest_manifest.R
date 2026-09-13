@@ -15,7 +15,7 @@ site_url <- sub("/+$", "", args[3])
 asset_rel <- c(
   full_animation = "assets/port-fairy-full.gif",
   final_sixth_animation = "assets/port-fairy-final-sixth.gif",
-  maximum_wave_height_map = "assets/port-fairy-maximum-waveheight.png"
+  maximum_significant_wave_height_estimate_map = "assets/port-fairy-maximum-hs-estimate.png"
 )
 asset_paths <- file.path(site_dir, asset_rel)
 if (!all(file.exists(asset_paths))) {
@@ -51,7 +51,7 @@ manifest <- list(
   assets = list(
     animation_full_gif_url = paste0(site_url, "/", asset_rel[["full_animation"]]),
     animation_final_sixth_gif_url = paste0(site_url, "/", asset_rel[["final_sixth_animation"]]),
-    maximum_wave_height_map_url = paste0(site_url, "/", asset_rel[["maximum_wave_height_map"]])
+    maximum_significant_wave_height_estimate_map_url = paste0(site_url, "/", asset_rel[["maximum_significant_wave_height_estimate_map"]])
   ),
   buoy = list(
     observation_time_utc = format(buoy_time_utc, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),

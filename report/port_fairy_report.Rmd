@@ -134,6 +134,12 @@ symmetric_limits <- function(z) {
   c(-m, m)
 }
 
+positive_limits <- function(z) {
+  m <- max(z, na.rm = TRUE)
+  if (!is.finite(m) || m <= 0) m <- 1e-8
+  c(0, m)
+}
+
 depth_raster <- rast(file.path(case_dir, "depth_20m_positive_water_depth.tif"))
 elevation_raster <- rast(file.path(case_dir, "elevation_20m_warped.tif"))
 depth_from_file <- read_text_model(file.path(case_dir, "depth.txt"), "depth.txt")
@@ -161,8 +167,9 @@ outline_from_raster <- function(r) {
 model_outline_om <- outline_from_raster(depth_raster)
 model_outline_ll_xy <- crds(project(model_outline_om, "EPSG:4326"))
 
-plot_geographic <- function(r_ll, ..., show_legend = FALSE) {
-  plot(r_ll, ...)
+plot_geographic <- function(r_ll, ..., show_legend = FALSE, range = NULL) {
+  # terra::plot uses range= to fix its colour scale; zlim= is for image().
+  if (is.null(range)) plot(r_ll, ...) else plot(r_ll, ..., range = range)
   lines(model_outline_ll_xy[, 1], model_outline_ll_xy[, 2],
         col = "black", lwd = 2)
   points(crds(buoy_ll)[1, 1], crds(buoy_ll)[1, 2],
@@ -213,7 +220,10 @@ depth_delta_wgs84 <- project(depth_file_minus_raster, "EPSG:4326", method = "bil
 
 eta <- read_field("eta")
 hmax <- read_field("Hmax")
-waveheight_max <- maximum_model_field(read_all_fields("WaveHeight"))
+# WaveHeight = T writes Hrms_##### and Havg_##### files in this FUNWAVE
+# revision; it does not write WaveHeight_##### files.
+hrms_max <- maximum_model_field(read_all_fields("Hrms"))
+hs_peak_estimate <- if (is.null(hrms_max)) NULL else sqrt(2) * hrms_max
 mask <- read_field("mask")
 
 eta_paths <- list.files(results_dir, pattern = "^eta_[0-9]{5}$",
@@ -231,6 +241,8 @@ eta_frames <- lapply(eta_paths, function(path) {
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
   z
 })
+eta_max <- do.call(pmax, c(eta_frames, na.rm = TRUE))
+
 eta_amplitude <- if (length(eta_frames)) max(vapply(eta_frames, function(z) {
   value <- max(abs(z), na.rm = TRUE)
   if (is.finite(value)) value else 0
@@ -294,7 +306,7 @@ plot_geographic(depth_file_wgs84, main = "FUNWAVE depth.txt reconstructed (WGS84
                 col = hcl.colors(45, "YlGnBu", rev = TRUE))
 plot_geographic(depth_delta_wgs84, main = "depth.txt minus warped raster (WGS84)",
                 col = hcl.colors(41, "Blue-Red 3"),
-                zlim = symmetric_raster_limits(depth_delta_wgs84))
+                range = symmetric_raster_limits(depth_delta_wgs84))
 ```
 
 ```{r bathy-check-table}
@@ -364,9 +376,26 @@ if (is.null(eta)) {
   eta_wgs84 <- write_model_output_rasters(eta_rotated, "eta_latest")
   plot_geographic(eta_wgs84, main = "Latest water-surface elevation (WGS84)",
                   col = hcl.colors(40, "Blue-Red 3"),
-                  zlim = eta_animation_limits, show_legend = TRUE)
+                  range = eta_animation_limits, show_legend = TRUE)
 }
 ```
+
+
+
+```{r eta_max, fig.cap='Max modelled water-surface elevation reconstructed on the rotated grid and mapped in WGS84. Land/dry cells are masked.'}
+if (is.null(eta_max )) {
+  plot.new(); text(0.5, 0.5, "No eta output was produced.")
+} else {
+  eta_plot <- eta_max 
+  if (!is.null(mask)) eta_plot[mask <= 0] <- NA_real_
+  eta_rotated <- model_to_rotated_raster(eta_plot, "eta")
+  eta_wgs84 <- write_model_output_rasters(eta_rotated, "eta_latest")
+  plot_geographic(eta_wgs84, main = "Latest water-surface elevation (WGS84)",
+                  col =rainbow(40),
+                  range = c(0,4), show_legend = TRUE)
+}
+```
+
 
 ## Free-surface animations
 
@@ -388,7 +417,7 @@ if (!length(eta_frames)) {
     plot_geographic(r_ll,
                     main = sprintf("Free-surface elevation: t = %d s (WGS84)", eta_time[k]),
                     col = hcl.colors(40, "Blue-Red 3"),
-                    zlim = eta_animation_limits, show_legend = TRUE)
+                    range = eta_animation_limits, show_legend = TRUE)
     add_wave_frame_annotation(r_ll, eta_time[k])
   }
 }
@@ -406,31 +435,32 @@ if (!length(final_sixth_indices)) {
     plot_geographic(r_ll,
                     main = sprintf("Free-surface elevation: t = %d s (WGS84)", eta_time[k]),
                     col = hcl.colors(40, "Blue-Red 3"),
-                    zlim = eta_animation_limits, show_legend = TRUE)
+                    range = eta_animation_limits, show_legend = TRUE)
     add_wave_frame_annotation(r_ll, eta_time[k])
   }
 }
 ```
 
-## Maximum wave height over the 30-minute run
+## Peak simulated significant wave-height estimate
 
-FUNWAVE's Hmax is maximum free-surface elevation, not wave height. This
-diagnostic is therefore the cellwise maximum of every WaveHeight output written
-during the run.
+`WaveHeight = T` makes FUNWAVE write `Hrms_#####` (root-mean-square wave
+height) and `Havg_#####`, rather than files named `WaveHeight_#####`. The
+map below is the largest saved local estimate of $H_s ≈ \sqrt{2} H_{rms}$.
+It is a significant-wave-height estimate, **not** the height of the single
+largest individual wave.
 
-```{r hmax, fig.cap='Maximum WaveHeight across all saved 30-minute outputs, reconstructed on the rotated grid and mapped in WGS84.'}
-if (is.null(waveheight_max)) {
-  plot.new(); text(0.5, 0.5, "No WaveHeight output was produced.")
+```{r peak-hs, fig.cap='Largest saved simulated significant wave-height estimate (sqrt(2) times Hrms), reconstructed on the rotated grid and mapped in WGS84.'}
+if (is.null(hs_peak_estimate)) {
+  plot.new(); text(0.5, 0.5, "No Hrms output was produced.")
 } else {
-  if (!is.null(mask)) waveheight_max[mask <= 0] <- NA_real_
-  wave_rotated <- model_to_rotated_raster(waveheight_max, "maximum WaveHeight")
-  wave_wgs84 <- write_model_output_rasters(wave_rotated, "waveheight_max_30min")
-  plot_geographic(wave_wgs84, main = "Maximum WaveHeight over 30 minutes (WGS84)",
+  if (!is.null(mask)) hs_peak_estimate[mask <= 0] <- NA_real_
+  hs_rotated <- model_to_rotated_raster(hs_peak_estimate, "peak Hs estimate")
+  hs_wgs84 <- write_model_output_rasters(hs_rotated, "hs_peak_estimate_30min")
+  plot_geographic(hs_wgs84, main = "Peak simulated significant wave-height estimate (WGS84)",
                   col = hcl.colors(40, "YlOrRd", rev = TRUE),
-                  show_legend = TRUE)
+                  range = positive_limits(hs_peak_estimate), show_legend = TRUE)
 }
 ```
-
 ## Maximum free-surface elevation
 
 ```{r hmax-eta, fig.cap='FUNWAVE Hmax: maximum free-surface elevation (not maximum wave height), shown for context.'}
@@ -439,8 +469,8 @@ if (!is.null(hmax)) {
   hmax_rotated <- model_to_rotated_raster(hmax, "Hmax")
   hmax_wgs84 <- write_model_output_rasters(hmax_rotated, "eta_max")
   plot_geographic(hmax_wgs84, main = "Maximum free-surface elevation, Hmax (WGS84)",
-                  col = hcl.colors(40, "Blue-Red 3"),
-                  zlim = symmetric_limits(hmax), show_legend = TRUE)
+                  col = hcl.colors(40, "YlOrRd", rev = TRUE),
+                  range = positive_limits(hmax), show_legend = TRUE)
 }
 ```
 

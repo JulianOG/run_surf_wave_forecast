@@ -6,3 +6,4 @@ port_fairy/data/*
 !port_fairy/data/VCDEM21_GDA2020_z54_Seamless_portFairy.tif
 port_fairy/output/
 .Rhistory
+.Rproj.user

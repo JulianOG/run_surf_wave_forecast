@@ -50,6 +50,14 @@ read_text_model <- function(path, label = basename(path)) {
   as_model_xy(utils::read.table(path, header = FALSE), label)
 }
 
+maximum_model_field <- function(fields) {
+  if (!length(fields)) return(NULL)
+  out <- fields[[1]]
+  if (length(fields) > 1) for (k in 2:length(fields)) out <- pmax(out, fields[[k]], na.rm = TRUE)
+  out[!is.finite(out)] <- NA_real_
+  out
+}
+
 model_to_rotated_raster <- function(z, depth_raster, source_is_low_x,
                                     label = "model field") {
   z <- as.matrix(z)
@@ -87,8 +95,9 @@ buoy_ll <- vect(matrix(c(forcing$buoy_lon, forcing$buoy_lat), ncol = 2),
                 type = "points", crs = "EPSG:4326")
 model_outline_ll_xy <- crds(project(outline_from_raster(depth_raster), "EPSG:4326"))
 
-plot_geographic <- function(r_ll, main, col, zlim, show_legend = TRUE) {
-  plot(r_ll, main = main, col = col, zlim = zlim,
+plot_geographic <- function(r_ll, main, col, range, show_legend = TRUE) {
+  # terra::plot uses range= to fix its colour scale; zlim= is for image().
+  plot(r_ll, main = main, col = col, range = range,
        xlab = "Longitude (WGS84)", ylab = "Latitude (WGS84)")
   lines(model_outline_ll_xy[, 1], model_outline_ll_xy[, 2],
         col = "black", lwd = 2)
@@ -163,7 +172,7 @@ draw_eta_frame <- function(k) {
   plot_geographic(
     r_ll,
     main = sprintf("Port Fairy free-surface elevation: t = %d s", eta_time[k]),
-    col = hcl.colors(40, "Blue-Red 3"), zlim = eta_limits, show_legend = TRUE
+    col = hcl.colors(40, "Blue-Red 3"), range = eta_limits, show_legend = TRUE
   )
   add_wave_frame_annotation(r_ll, eta_time[k])
 }
@@ -197,46 +206,39 @@ write_animation(seq_along(eta_frames), full_gif)
 final_sixth_indices <- which(eta_time >= (5 / 6) * grid$total_time_s)
 write_animation(final_sixth_indices, final_sixth_gif)
 
-# This FUNWAVE-TVD revision supports Hmax (maximum positive free-surface
-# elevation), but does not support a WaveHeight output keyword. Do not pretend
-# that Hmax is maximum individual-wave height: label the diagnostic correctly.
-hmax_paths <- list.files(results_dir, pattern = "^Hmax(_[0-9]{5})?$",
-                         full.names = TRUE)
-if (length(hmax_paths)) {
-  hmax_ids <- ifelse(grepl("_", basename(hmax_paths)),
-                     as.integer(sub("^Hmax_", "", basename(hmax_paths))), 0L)
-  hmax_field <- read_text_model(hmax_paths[which.max(hmax_ids)], "Hmax")
-  hmax_title <- "Port Fairy maximum free-surface elevation (Hmax)"
-} else {
-  # Defensive fallback for an older executable: maximum sampled eta. It keeps
-  # the page deployable but is intentionally labelled as sampled elevation.
-  hmax_field <- eta_frames[[1]]
-  if (length(eta_frames) > 1) {
-    for (k in 2:length(eta_frames)) hmax_field <- pmax(hmax_field, eta_frames[[k]], na.rm = TRUE)
-  }
-  hmax_title <- "Port Fairy maximum sampled free-surface elevation"
-}
-hmax_field[!is.finite(hmax_field)] <- NA_real_
-if (!is.null(mask)) hmax_field[mask <= 0] <- NA_real_
+# WaveHeight = T writes Hrms_##### and Havg_##### in this FUNWAVE revision.
+# Hrms is converted to an Hs estimate using Hs ~= sqrt(2) * Hrms, as in
+# the FUNWAVE example post-processing. This is not a maximum individual wave.
+hrms_paths <- list.files(results_dir, pattern = "^Hrms_[0-9]{5}$", full.names = TRUE)
+if (!length(hrms_paths)) stop("No Hrms outputs exist; WaveHeight = T should create Hrms_##### files.")
+hrms_ids <- as.integer(sub("^Hrms_", "", basename(hrms_paths)))
+hrms_paths <- hrms_paths[order(hrms_ids)]
+hrms_max <- maximum_model_field(lapply(hrms_paths, read_text_model, label = "Hrms"))
+hs_peak_estimate <- sqrt(2) * hrms_max
+hs_peak_estimate[!is.finite(hs_peak_estimate)] <- NA_real_
+if (!is.null(mask)) hs_peak_estimate[mask <= 0] <- NA_real_
 
-wave_om <- model_to_rotated_raster(hmax_field, depth_raster, source_is_low_x,
-                                   "maximum free-surface elevation")
-wave_ll <- project(wave_om, "EPSG:4326", method = "bilinear")
-wave_file <- file.path(assets_dir, "port-fairy-maximum-waveheight.png")
-grDevices::png(wave_file, width = 1000, height = 750, res = 125)
+hs_om <- model_to_rotated_raster(hs_peak_estimate, depth_raster, source_is_low_x,
+                                  "peak significant wave-height estimate")
+hs_ll <- project(hs_om, "EPSG:4326", method = "bilinear")
+hs_file <- file.path(assets_dir, "port-fairy-maximum-hs-estimate.png")
+hs_limit <- global(hs_ll, "max", na.rm = TRUE)[1, 1]
+if (!is.finite(hs_limit) || hs_limit <= 0) hs_limit <- 1e-8
+grDevices::png(hs_file, width = 1000, height = 750, res = 125)
 tryCatch(
   plot_geographic(
-    wave_ll, main = hmax_title,
+    hs_ll, main = "Peak simulated significant wave-height estimate",
     col = hcl.colors(40, "YlOrRd", rev = TRUE),
-    zlim = as.numeric(global(wave_ll, "range", na.rm = TRUE)[1, ]),
-    show_legend = TRUE
+    range = c(0, hs_limit), show_legend = TRUE
   ),
   finally = grDevices::dev.off()
 )
-if (!file.exists(wave_file) || file.info(wave_file)$size == 0) {
-  stop("Could not create ", wave_file)
-}
+if (!file.exists(hs_file) || file.info(hs_file)$size == 0) stop("Could not create ", hs_file)
 
+message("Created social assets:")
+message("  ", full_gif)
+message("  ", final_sixth_gif)
+message("  ", hs_file)
 message("Created social assets:")
 message("  ", full_gif)
 message("  ", final_sixth_gif)

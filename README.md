@@ -1,16 +1,32 @@
-# Port Fairy maximum-map fix
+# Port Fairy v12 correction patch
 
-Replace only this file in the repository:
+This is deliberately **not** a repository snapshot and contains no nested ZIP.
 
-- `scripts/render_social_assets.R`
+From the root of your local `run_surf_wave_forecast` checkout, copy the `fixes`
+folder there and run:
 
-The pinned FUNWAVE-TVD executable has no `WaveHeight` output option. The old
-script therefore failed while looking for files that it can never produce.
+```r
+source("fixes/apply_port_fairy_v12.R")
+```
 
-The replacement uses FUNWAVE's supported `Hmax` output and labels it correctly
-as **maximum free-surface elevation (Hmax)**. This is not presented as maximum
-individual-wave height. If an older executable does not write `Hmax`, it falls
-back to the maximum saved eta snapshot and labels that clearly.
+Then inspect and commit the four changed files:
 
-Commit and push this one file, then rerun the workflow. No Docker rebuild is
-needed.
+```sh
+git diff -- port_fairy/setup_port_fairy_funwave.R report/port_fairy_report.Rmd scripts/render_social_assets.R scripts/write_latest_manifest.R
+git add port_fairy/setup_port_fairy_funwave.R report/port_fairy_report.Rmd scripts/render_social_assets.R scripts/write_latest_manifest.R
+git commit -m "Fix Port Fairy colour scales, Hs diagnostic and source forcing"
+git push
+```
+
+Changes made:
+
+- writes FUNWAVE outputs every 7.5 seconds (four times the former rate);
+- uses `range=` for all `terra::plot()` colour scales;
+- reads FUNWAVE's actual `Hrms_#####` output and maps the peak simulated
+  significant-wave-height estimate (`sqrt(2) * Hrms`), rather than treating
+  maximum surface elevation as a wave height;
+- removes the sponge from the wavemaker edge, while retaining it at the far and
+  lateral boundaries;
+- reads the buoy's peak directional spread (`WPDS`) and uses it as the first-pass
+  `Sigma_Theta` input for the `WK_IRR` source. A 20 degree default is retained
+  only if `WPDS` is missing or invalid.
