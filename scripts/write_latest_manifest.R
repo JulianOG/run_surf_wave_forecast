@@ -81,4 +81,3 @@ jsonlite::write_json(
   manifest, file.path(site_dir, "latest.json"),
   auto_unbox = TRUE, pretty = TRUE, na = "null"
 )
-

@@ -53,7 +53,9 @@ read_text_model <- function(path, label = basename(path)) {
 maximum_model_field <- function(fields) {
   if (!length(fields)) return(NULL)
   out <- fields[[1]]
-  if (length(fields) > 1) for (k in 2:length(fields)) out <- pmax(out, fields[[k]], na.rm = TRUE)
+  if (length(fields) > 1) {
+    for (k in 2:length(fields)) out <- pmax(out, fields[[k]], na.rm = TRUE)
+  }
   out[!is.finite(out)] <- NA_real_
   out
 }
@@ -207,19 +209,20 @@ final_sixth_indices <- which(eta_time >= (5 / 6) * grid$total_time_s)
 write_animation(final_sixth_indices, final_sixth_gif)
 
 # WaveHeight = T writes Hrms_##### and Havg_##### in this FUNWAVE revision.
-# Hrms is converted to an Hs estimate using Hs ~= sqrt(2) * Hrms, as in
-# the FUNWAVE example post-processing. This is not a maximum individual wave.
+# Hrms is converted to an Hs estimate using Hs ~= sqrt(2) * Hrms. This is not
+# a maximum individual wave.
 hrms_paths <- list.files(results_dir, pattern = "^Hrms_[0-9]{5}$", full.names = TRUE)
 if (!length(hrms_paths)) stop("No Hrms outputs exist; WaveHeight = T should create Hrms_##### files.")
 hrms_ids <- as.integer(sub("^Hrms_", "", basename(hrms_paths)))
 hrms_paths <- hrms_paths[order(hrms_ids)]
-hrms_max <- maximum_model_field(lapply(hrms_paths, read_text_model, label = "Hrms"))
-hs_peak_estimate <- sqrt(2) * hrms_max
+hs_peak_estimate <- sqrt(2) * maximum_model_field(
+  lapply(hrms_paths, read_text_model, label = "Hrms")
+)
 hs_peak_estimate[!is.finite(hs_peak_estimate)] <- NA_real_
 if (!is.null(mask)) hs_peak_estimate[mask <= 0] <- NA_real_
 
 hs_om <- model_to_rotated_raster(hs_peak_estimate, depth_raster, source_is_low_x,
-                                  "peak significant wave-height estimate")
+                                 "peak significant wave-height estimate")
 hs_ll <- project(hs_om, "EPSG:4326", method = "bilinear")
 hs_file <- file.path(assets_dir, "port-fairy-maximum-hs-estimate.png")
 hs_limit <- global(hs_ll, "max", na.rm = TRUE)[1, 1]
@@ -229,17 +232,16 @@ tryCatch(
   plot_geographic(
     hs_ll, main = "Peak simulated significant wave-height estimate",
     col = hcl.colors(40, "YlOrRd", rev = TRUE),
-    range = c(0, hs_limit), show_legend = TRUE
+    range = c(0, hs_limit),
+    show_legend = TRUE
   ),
   finally = grDevices::dev.off()
 )
-if (!file.exists(hs_file) || file.info(hs_file)$size == 0) stop("Could not create ", hs_file)
+if (!file.exists(hs_file) || file.info(hs_file)$size == 0) {
+  stop("Could not create ", hs_file)
+}
 
 message("Created social assets:")
 message("  ", full_gif)
 message("  ", final_sixth_gif)
 message("  ", hs_file)
-message("Created social assets:")
-message("  ", full_gif)
-message("  ", final_sixth_gif)
-message("  ", wave_file)

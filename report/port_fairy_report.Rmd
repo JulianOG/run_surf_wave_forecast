@@ -241,8 +241,6 @@ eta_frames <- lapply(eta_paths, function(path) {
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
   z
 })
-eta_max <- do.call(pmax, c(eta_frames, na.rm = TRUE))
-
 eta_amplitude <- if (length(eta_frames)) max(vapply(eta_frames, function(z) {
   value <- max(abs(z), na.rm = TRUE)
   if (is.finite(value)) value else 0
@@ -380,23 +378,6 @@ if (is.null(eta)) {
 }
 ```
 
-
-
-```{r eta_max, fig.cap='Max modelled water-surface elevation reconstructed on the rotated grid and mapped in WGS84. Land/dry cells are masked.'}
-if (is.null(eta_max )) {
-  plot.new(); text(0.5, 0.5, "No eta output was produced.")
-} else {
-  eta_plot <- eta_max 
-  if (!is.null(mask)) eta_plot[mask <= 0] <- NA_real_
-  eta_rotated <- model_to_rotated_raster(eta_plot, "eta")
-  eta_wgs84 <- write_model_output_rasters(eta_rotated, "eta_latest")
-  plot_geographic(eta_wgs84, main = "Latest water-surface elevation (WGS84)",
-                  col =rainbow(40),
-                  range = c(0,4), show_legend = TRUE)
-}
-```
-
-
 ## Free-surface animations
 
 Both GIFs use all available eta snapshots at a shared colour scale. Knitr's
@@ -461,6 +442,7 @@ if (is.null(hs_peak_estimate)) {
                   range = positive_limits(hs_peak_estimate), show_legend = TRUE)
 }
 ```
+
 ## Maximum free-surface elevation
 
 ```{r hmax-eta, fig.cap='FUNWAVE Hmax: maximum free-surface elevation (not maximum wave height), shown for context.'}
@@ -473,6 +455,19 @@ if (!is.null(hmax)) {
                   range = positive_limits(hmax), show_legend = TRUE)
 }
 ```
+
+## Data acknowledgement and citation
+
+Buoy data were sourced from the **Integrated Marine Observing System (IMOS)**,
+which is enabled by the National Collaborative Research Infrastructure Strategy
+(NCRIS). The wave data were collected and quality controlled by the University
+of Western Australia. This dataset is an output from the Catching Oz Waves
+project, which received investment from the Australian Research Data Commons
+(ARDC): <https://doi.org/10.47486/DP748>. ARDC is funded by NCRIS.
+
+Suggested data citation: *Deakin University (year of data downloaded), Wave
+buoys Observations -- Australia -- near real-time, downloaded from the IMOS URL
+on the date of download.*
 
 ## Provenance
 

@@ -280,10 +280,9 @@ freq_min <- max(0.04, freq_peak / 2.5)
 freq_max <- min(0.50, freq_peak * 3)
 x_wk <- n_source * dx + 20       # 20 m inside the buoy-side source edge
 
-# Do not place a sponge on the source edge: in the previous setup the
-# 100 m sponge overlapped the internal wavemaker and could damp generated
-# wave energy before it crossed the domain. Keep damping only at the far
-# x edge and the two lateral edges to limit reflected energy.
+# Do not place a sponge on the source edge: the previous 100 m sponge
+# overlapped the internal wavemaker and could damp generated wave energy
+# before it crossed the domain. Retain damping at the far and lateral edges.
 far_x_sponge <- 5 * dx
 sponge_west_width <- if (source_is_low_x) 0 else far_x_sponge
 sponge_east_width <- if (source_is_low_x) far_x_sponge else 0
@@ -307,7 +306,7 @@ input <- c(
   sprintf("FreqMin = %.5f", freq_min), sprintf("FreqMax = %.5f", freq_max),
   sprintf("Hmo = %.3f", hs[i]), "GammaTMA = 3.3",
   sprintf("ThetaPeak = %.2f", theta_peak),
-  sprintf("Sigma_Theta = %.2f", sigma_theta)
+  sprintf("Sigma_Theta = %.2f", sigma_theta),
   "PERIODIC = F",
   "DIFFUSION_SPONGE = F", "FRICTION_SPONGE = T", "DIRECT_SPONGE = T",
   "Csp = 0.0", "CDsponge = 1.0",
@@ -346,4 +345,3 @@ message("Created FUNWAVE case in: ", out_dir)
 message("Latest buoy forcing: Hs=", round(hs[i], 2), " m, Tp=", round(tp[i], 1),
         " s, from=", round(dir_from[i]), " degrees, at ", forcing$time_utc)
 message("Grid: ", mglob, " x ", nglob, " at ", dx, " m")
-
