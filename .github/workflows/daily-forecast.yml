@@ -25,8 +25,8 @@ permissions:
 env:
   # GHCR image names must be lowercase. Change this if the repository moves.
   IMAGE_NAME: ghcr.io/julianog/funwave-tvd
-  # v8 contains the Leaflet package required by the interactive Port Fairy maps.
-  IMAGE_TAG: v8
+  # v9 installs Leaflet from CRAN; Ubuntu 24.04 has no r-cran-leaflet package.
+  IMAGE_TAG: v9
 
 jobs:
   ensure-image:

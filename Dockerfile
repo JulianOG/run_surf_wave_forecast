@@ -24,8 +24,8 @@ ARG DEBIAN_FRONTEND=noninteractive
 # return after a warning and leave a broken animation image behind.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates build-essential cargo rustc openmpi-bin python3 r-base pandoc \
-    r-cran-jsonlite r-cran-knitr r-cran-leaflet r-cran-ncdf4 r-cran-rmarkdown r-cran-terra && \
-    Rscript -e 'options(repos = c(CRAN = "https://cloud.r-project.org")); install.packages("gifski", type = "source"); if (!requireNamespace("gifski", quietly = TRUE)) stop("gifski did not install"); message("gifski version: ", as.character(utils::packageVersion("gifski")))' && \
+    r-cran-jsonlite r-cran-knitr r-cran-ncdf4 r-cran-raster r-cran-rmarkdown r-cran-sf r-cran-terra && \
+    Rscript -e 'options(repos = c(CRAN = "https://cloud.r-project.org")); install.packages(c("gifski", "leaflet"), type = "source", dependencies = c("Depends", "Imports")); for (pkg in c("gifski", "leaflet")) if (!requireNamespace(pkg, quietly = TRUE)) stop(pkg, " did not install"); message("R packages installed: ", paste(c("gifski", "leaflet"), collapse = ", "))' && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/funwave/bin/funwave /opt/funwave/bin/funwave
