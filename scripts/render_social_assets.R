@@ -96,6 +96,16 @@ source_is_low_x <- identical(grid$source_edge, "minimum rotated x")
 buoy_ll <- vect(matrix(c(forcing$buoy_lon, forcing$buoy_lat), ncol = 2),
                 type = "points", crs = "EPSG:4326")
 model_outline_ll_xy <- crds(project(outline_from_raster(depth_raster), "EPSG:4326"))
+source_x_om <- if (source_is_low_x) {
+  xmin(depth_raster) + grid$x_wk_m
+} else {
+  xmax(depth_raster) - grid$x_wk_m
+}
+source_line_om <- vect(rbind(
+  c(source_x_om, ymin(depth_raster)),
+  c(source_x_om, ymax(depth_raster))
+), type = "lines", crs = crs(depth_raster))
+source_line_ll_xy <- crds(project(source_line_om, "EPSG:4326"))
 
 plot_geographic <- function(r_ll, main, col, range, show_legend = TRUE) {
   # terra::plot uses range= to fix its colour scale; zlim= is for image().
@@ -103,11 +113,14 @@ plot_geographic <- function(r_ll, main, col, range, show_legend = TRUE) {
        xlab = "Longitude (WGS84)", ylab = "Latitude (WGS84)")
   lines(model_outline_ll_xy[, 1], model_outline_ll_xy[, 2],
         col = "black", lwd = 2)
+  lines(source_line_ll_xy[, 1], source_line_ll_xy[, 2],
+        col = "dodgerblue3", lwd = 2, lty = 2)
   points(crds(buoy_ll)[1, 1], crds(buoy_ll)[1, 2],
          pch = 16, col = "red", cex = 1.25)
   if (show_legend) {
-    legend("bottomleft", legend = c("FUNWAVE grid", "buoy"),
-           col = c("black", "red"), lwd = c(2, NA), pch = c(NA, 16),
+    legend("bottomleft", legend = c("FUNWAVE grid", "internal wavemaker", "buoy"),
+           col = c("black", "dodgerblue3", "red"),
+           lwd = c(2, 2, NA), lty = c(1, 2, NA), pch = c(NA, NA, 16),
            bty = "n", cex = 0.75)
   }
 }
@@ -120,7 +133,8 @@ add_wave_frame_annotation <- function(r_ll, elapsed_s) {
   e <- ext(r_ll)
   x_span <- xmax(e) - xmin(e)
   y_span <- ymax(e) - ymin(e)
-  bearing_to <- forcing$peak_direction_to_deg_true[1]
+  bearing_to <- forcing$boundary_direction_to_deg_true[1]
+  direction_statistic <- forcing$boundary_direction_statistic[1]
   angle <- bearing_to * pi / 180
 
   # Convert a true-north bearing to longitude/latitude drawing increments.
@@ -136,8 +150,9 @@ add_wave_frame_annotation <- function(r_ll, elapsed_s) {
     paste("Local:", frame_local_time(elapsed_s)),
     sprintf("Model +%02.0f:%04.1f", floor(elapsed_s / 60), elapsed_s %% 60),
     sprintf("Buoy Hs %.2f m | Tp %.1f s", forcing$hs_m[1], forcing$tp_s[1]),
-    sprintf("Waves from %.0f° (arrow travels to %.0f°)",
-            forcing$peak_direction_from_deg_true[1], bearing_to)
+    sprintf("%s waves from %.0f° (arrow travels to %.0f°)",
+            tools::toTitleCase(direction_statistic),
+            forcing$boundary_direction_from_deg_true[1], bearing_to)
   )
   legend("topright", legend = label, bty = "o", bg = rgb(1, 1, 1, 0.82),
          cex = 0.74, text.col = "black")
@@ -246,7 +261,43 @@ if (!file.exists(eta_max_file) || file.info(eta_max_file)$size == 0) {
   stop("Could not create ", eta_max_file)
 }
 
+# WaveHeight = T writes Hsig through FUNWAVE's mean-wave diagnostic.  It is
+# the suitable public wave-height product; eta_max above remains a crest map.
+hsig_paths <- list.files(results_dir, pattern = "^Hsig_[0-9]{5}$", full.names = TRUE)
+if (!length(hsig_paths)) {
+  stop("No Hsig outputs exist. Check that WaveHeight = T, STEADY_TIME and T_INTV_mean are in input.txt.")
+}
+hsig_number <- as.integer(sub("^Hsig_", "", basename(hsig_paths)))
+hsig_paths <- hsig_paths[order(hsig_number)]
+hsig_frames <- lapply(hsig_paths, function(path) {
+  z <- read_text_model(path, basename(path))
+  if (!is.null(mask)) z[mask <= 0] <- NA_real_
+  z
+})
+hsig_max <- maximum_model_field(hsig_frames)
+hsig_max_om <- model_to_rotated_raster(hsig_max, depth_raster, source_is_low_x,
+                                       "peak simulated significant wave height")
+hsig_max_ll <- project(hsig_max_om, "EPSG:4326", method = "bilinear")
+hsig_max_ll <- apply_wet_mask_wgs84(hsig_max_ll)
+hsig_max_file <- file.path(assets_dir, "port-fairy-maximum-hsig.png")
+hsig_max_limit <- global(hsig_max_ll, "max", na.rm = TRUE)[1, 1]
+if (!is.finite(hsig_max_limit) || hsig_max_limit <= 0) hsig_max_limit <- 1e-8
+grDevices::png(hsig_max_file, width = 1000, height = 750, res = 125)
+tryCatch(
+  plot_geographic(
+    hsig_max_ll, main = "Peak simulated significant wave height across 30 minutes",
+    col = hcl.colors(40, "YlOrRd", rev = TRUE),
+    range = c(0, hsig_max_limit),
+    show_legend = TRUE
+  ),
+  finally = grDevices::dev.off()
+)
+if (!file.exists(hsig_max_file) || file.info(hsig_max_file)$size == 0) {
+  stop("Could not create ", hsig_max_file)
+}
+
 message("Created social assets:")
 message("  ", full_gif)
 message("  ", final_sixth_gif)
 message("  ", eta_max_file)
+message("  ", hsig_max_file)

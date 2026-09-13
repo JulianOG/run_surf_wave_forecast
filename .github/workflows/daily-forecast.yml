@@ -25,8 +25,8 @@ permissions:
 env:
   # GHCR image names must be lowercase. Change this if the repository moves.
   IMAGE_NAME: ghcr.io/julianog/funwave-tvd
-  # v10 uses browser Leaflet, avoiding the unavailable Ubuntu R package.
-  IMAGE_TAG: v10
+  # v11 is the lean FUNWAVE/MPI image; report packages install on the runner.
+  IMAGE_TAG: v11
 
 jobs:
   ensure-image:
@@ -75,9 +75,39 @@ jobs:
 
   run-and-render:
     needs: ensure-image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Pandoc
+        uses: r-lib/actions/setup-pandoc@v2
+
+      - name: System libraries for R spatial packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gdal-bin libgdal-dev libproj-dev libgeos-dev libudunits2-dev \
+            libnetcdf-dev libjpeg-dev
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - name: Install R report packages
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          cache-version: 10
+          extra-packages: |
+            any::gifski
+            any::htmltools
+            any::htmlwidgets
+            any::jsonlite
+            any::knitr
+            any::leaflet
+            any::ncdf4
+            any::rmarkdown
+            any::terra
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -95,19 +125,13 @@ jobs:
             "${{ needs.ensure-image.outputs.image }}" \
             /work/scripts/run_test_case.sh
 
-      - name: Verify the R GIF renderer in the image
+      - name: Verify R report packages
         run: |
-          docker run --rm \
-            "${{ needs.ensure-image.outputs.image }}" \
-            -lc 'Rscript -e "stopifnot(requireNamespace(\"gifski\", quietly = TRUE)); message(as.character(utils::packageVersion(\"gifski\")))"'
+          Rscript -e 'for (pkg in c("gifski", "htmltools", "htmlwidgets", "leaflet", "ncdf4", "rmarkdown", "terra")) stopifnot(requireNamespace(pkg, quietly = TRUE))'
 
       - name: Build the rotated Port Fairy case from bathymetry and buoy data
         run: |
-          docker run --rm \
-            --user root \
-            -v "$PWD:/work" \
-            "${{ needs.ensure-image.outputs.image }}" \
-            -lc 'Rscript /work/port_fairy/setup_port_fairy_funwave.R'
+          Rscript port_fairy/setup_port_fairy_funwave.R
 
       - name: Run the 30-minute Port Fairy FUNWAVE case
         run: |
@@ -119,32 +143,17 @@ jobs:
 
       - name: Render Port Fairy and compact-test HTML pages
         run: |
-          docker run --rm \
-            --user root \
-            -v "$PWD:/work" \
-            "${{ needs.ensure-image.outputs.image }}" \
-            -lc 'Rscript -e "rmarkdown::render(\"report/port_fairy_report.Rmd\", output_file=\"index.html\", output_dir=\"site\", quiet=TRUE); rmarkdown::render(\"report/beach_2d_radiation_plots.Rmd\", output_file=\"beach_test.html\", output_dir=\"site\", quiet=TRUE)"'
+          Rscript -e 'rmarkdown::render("report/port_fairy_report.Rmd", output_file="index.html", output_dir="site", quiet=TRUE); rmarkdown::render("report/beach_2d_radiation_plots.Rmd", output_file="beach_test.html", output_dir="site", quiet=TRUE)'
 
       - name: Generate stable social assets and latest manifest
         run: |
-          docker run --rm \
-            --user root \
-            -v "$PWD:/work" \
-            "${{ needs.ensure-image.outputs.image }}" \
-            -lc '
-              set -euo pipefail
-              mkdir -p /work/site/assets
-              # R Markdown embeds animated figures in index.html.  Generate
-              # independent stable files here instead of looking for an
-              # embedded figure under site/.
-              Rscript /work/scripts/render_social_assets.R \
-                /work/port_fairy/output /work/site
-              Rscript /work/scripts/write_latest_manifest.R \
-                /work/port_fairy/output /work/site \
-                https://julianog.github.io/run_surf_wave_forecast
-              echo "Published social assets:"
-              find /work/site/assets -maxdepth 1 -type f -printf "%f\\n"
-            '
+          set -euo pipefail
+          mkdir -p site/assets
+          Rscript scripts/render_social_assets.R port_fairy/output site
+          Rscript scripts/write_latest_manifest.R \
+            port_fairy/output site https://julianog.github.io/run_surf_wave_forecast
+          echo "Published social assets:"
+          find site/assets -maxdepth 1 -type f -printf "%f\\n"
 
       - name: Upload full model results temporarily
         uses: actions/upload-artifact@v4

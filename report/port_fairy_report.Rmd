@@ -13,6 +13,7 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
 
 suppressPackageStartupMessages({
   library(terra)
+  library(leaflet)
 })
 
 case_dir <- normalizePath("../port_fairy/output", mustWork = TRUE)
@@ -169,17 +170,34 @@ outline_from_raster <- function(r) {
 model_outline_om <- outline_from_raster(depth_raster)
 model_outline_ll_xy <- crds(project(model_outline_om, "EPSG:4326"))
 
+# Model x is always written from the buoy-side source edge toward the coast.
+# Draw the actual internal-wavemaker line on every map so the reconstructed
+# fields can be checked against their physical source location.
+source_x_om <- if (source_is_low_x) {
+  xmin(depth_raster) + grid$x_wk_m
+} else {
+  xmax(depth_raster) - grid$x_wk_m
+}
+source_line_om <- vect(rbind(
+  c(source_x_om, ymin(depth_raster)),
+  c(source_x_om, ymax(depth_raster))
+), type = "lines", crs = crs(depth_raster))
+source_line_ll_xy <- crds(project(source_line_om, "EPSG:4326"))
+
 plot_geographic <- function(r_ll, ..., show_legend = FALSE, range = NULL) {
   # terra::plot uses range= to fix its colour scale; zlim= is for image().
   if (is.null(range)) plot(r_ll, ...) else plot(r_ll, ..., range = range)
   lines(model_outline_ll_xy[, 1], model_outline_ll_xy[, 2],
         col = "black", lwd = 2)
+  lines(source_line_ll_xy[, 1], source_line_ll_xy[, 2],
+        col = "dodgerblue3", lwd = 2, lty = 2)
   points(crds(buoy_ll)[1, 1], crds(buoy_ll)[1, 2],
          pch = 16, col = "red", cex = 1.25)
   if (show_legend) {
     legend("bottomleft",
-           legend = c("FUNWAVE grid", "buoy"),
-           col = c("black", "red"), lwd = c(2, NA), pch = c(NA, 16),
+           legend = c("FUNWAVE grid", "internal wavemaker", "buoy"),
+           col = c("black", "dodgerblue3", "red"), lwd = c(2, 2, NA),
+           lty = c(1, 2, NA), pch = c(NA, NA, 16),
            bty = "n", cex = 0.75)
   }
 }
@@ -198,53 +216,34 @@ apply_wet_mask_wgs84 <- function(r_ll) {
   r_ll
 }
 
-interactive_map_number <- 0L
-
 leaflet_model_map <- function(r_ll, palette, limits, legend_title) {
-  # This uses Leaflet's browser library directly. It avoids a fragile R-leaflet
-  # build while retaining an interactive, pan-and-zoom map in the HTML report.
-  interactive_map_number <<- interactive_map_number + 1L
-  map_id <- paste0("port-fairy-map-", interactive_map_number)
   b <- local_map_bounds(r_ll)
-  e <- ext(r_ll)
-
-  png_file <- tempfile(fileext = ".png")
-  on.exit(unlink(png_file), add = TRUE)
-  grDevices::png(png_file, width = ncol(r_ll), height = nrow(r_ll),
-                 bg = "transparent")
-  tryCatch({
-    par(mar = c(0, 0, 0, 0), xaxs = "i", yaxs = "i")
-    plot(r_ll, col = palette, range = limits, axes = FALSE, legend = FALSE,
-         box = FALSE, colNA = "transparent")
-  }, finally = grDevices::dev.off())
-  overlay_uri <- base64enc::dataURI(file = png_file, mime = "image/png")
-
-  outline_js <- paste(
-    sprintf("[%.8f, %.8f]", model_outline_ll_xy[, 2], model_outline_ll_xy[, 1]),
-    collapse = ", "
+  pal <- colorNumeric(palette = palette, domain = limits, na.color = "transparent")
+  m <- leaflet(options = leafletOptions(minZoom = 14, maxZoom = 18,
+                                        maxBoundsViscosity = 1))
+  # CARTO's public tile endpoint now returns an API-key warning in the report.
+  # Use standard OpenStreetMap tiles instead; they require no project key.
+  m <- addProviderTiles(m, "OpenStreetMap.Mapnik", group = "OpenStreetMap")
+  m <- setMaxBounds(m, b[["west"]], b[["south"]], b[["east"]], b[["north"]])
+  m <- fitBounds(m, b[["west"]], b[["south"]], b[["east"]], b[["north"]])
+  m <- addRasterImage(m, r_ll, colors = pal, opacity = 0.88, project = FALSE,
+                      group = "Model output")
+  m <- addPolylines(m, lng = model_outline_ll_xy[, 1], lat = model_outline_ll_xy[, 2],
+                    color = "black", weight = 2, group = "FUNWAVE grid")
+  m <- addPolylines(m, lng = source_line_ll_xy[, 1], lat = source_line_ll_xy[, 2],
+                    color = "dodgerblue3", weight = 2, dashArray = "6 6",
+                    group = "Internal wavemaker")
+  m <- addCircleMarkers(m, lng = crds(buoy_ll)[1, 1], lat = crds(buoy_ll)[1, 2],
+                        radius = 5, color = "red", fillOpacity = 1,
+                        label = "Port Fairy wave buoy", group = "Buoy")
+  m <- addLayersControl(
+    m,
+    baseGroups = "OpenStreetMap",
+    overlayGroups = c("Model output", "FUNWAVE grid", "Internal wavemaker", "Buoy"),
+    options = layersControlOptions(collapsed = FALSE)
   )
-  colours_js <- jsonlite::toJSON(palette, auto_unbox = TRUE)
-  title_js <- jsonlite::toJSON(legend_title, auto_unbox = TRUE)
-  js <- sprintf(
-    "(function() {\n  var map = L.map('%s', {minZoom: 13, maxZoom: 18, maxBounds: [[%.8f, %.8f], [%.8f, %.8f]], maxBoundsViscosity: 1.0});\n  map.fitBounds([[%.8f, %.8f], [%.8f, %.8f]]);\n  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {attribution: '&copy; OpenStreetMap contributors &copy; CARTO'}).addTo(map);\n  L.imageOverlay('%s', [[%.8f, %.8f], [%.8f, %.8f]], {opacity: 0.88, interactive: true}).addTo(map);\n  L.polyline([%s], {color: 'black', weight: 2}).addTo(map);\n  L.circleMarker([%.8f, %.8f], {radius: 5, color: 'red', fillColor: 'red', fillOpacity: 1}).bindTooltip('Port Fairy wave buoy').addTo(map);\n  var legend = L.control({position: 'bottomright'});\n  legend.onAdd = function() { var d = L.DomUtil.create('div', 'port-fairy-legend'); d.innerHTML = '<b>' + %s + '</b><div class=\"port-fairy-scale\" style=\"background: linear-gradient(to right, ' + %s.join(', ') + ');\"></div><span>%.2f</span><span style=\"float:right\">%.2f</span>'; return d; };\n  legend.addTo(map);\n})();",
-    map_id, b[["south"]], b[["west"]], b[["north"]], b[["east"]],
-    b[["south"]], b[["west"]], b[["north"]], b[["east"]], overlay_uri,
-    ymin(e), xmin(e), ymax(e), xmax(e), outline_js,
-    crds(buoy_ll)[1, 2], crds(buoy_ll)[1, 1], title_js, colours_js,
-    limits[1], limits[2]
-  )
-  dependency <- htmltools::htmlDependency(
-    name = "leaflet", version = "1.9.4",
-    src = c(href = "https://unpkg.com/leaflet@1.9.4/dist"),
-    stylesheet = "leaflet.css", script = "leaflet.js"
-  )
-  htmltools::attachDependencies(
-    htmltools::tagList(
-      htmltools::tags$style(".port-fairy-map {height: 560px; width: 100%;} .port-fairy-legend {background: rgba(255,255,255,0.90); padding: 6px 8px; line-height: 1.25; min-width: 190px;} .port-fairy-scale {height: 10px; margin: 4px 0 1px;}"),
-      htmltools::tags$div(id = map_id, class = "port-fairy-map"),
-      htmltools::tags$script(htmltools::HTML(js))
-    ), dependency
-  )
+  addLegend(m, position = "bottomright", pal = pal, values = limits,
+            title = legend_title, opacity = 0.88)
 }
 
 frame_local_time <- function(elapsed_s) {
@@ -255,7 +254,8 @@ add_wave_frame_annotation <- function(r_ll, elapsed_s) {
   e <- ext(r_ll)
   x_span <- xmax(e) - xmin(e)
   y_span <- ymax(e) - ymin(e)
-  bearing_to <- forcing$peak_direction_to_deg_true[1]
+  bearing_to <- forcing$boundary_direction_to_deg_true[1]
+  direction_statistic <- forcing$boundary_direction_statistic[1]
   angle <- bearing_to * pi / 180
 
   # The map is in longitude/latitude. Scale the longitude component by the
@@ -272,8 +272,9 @@ add_wave_frame_annotation <- function(r_ll, elapsed_s) {
     paste("Local:", frame_local_time(elapsed_s)),
     sprintf("Model +%02.0f:%04.1f", floor(elapsed_s / 60), elapsed_s %% 60),
     sprintf("Buoy Hs %.2f m | Tp %.1f s", forcing$hs_m[1], forcing$tp_s[1]),
-    sprintf("Waves from %.0f° (arrow travels to %.0f°)",
-            forcing$peak_direction_from_deg_true[1], bearing_to)
+    sprintf("%s waves from %.0f° (arrow travels to %.0f°)",
+            tools::toTitleCase(direction_statistic),
+            forcing$boundary_direction_from_deg_true[1], bearing_to)
   )
   legend("topright", legend = label, bty = "o", bg = rgb(1, 1, 1, 0.82),
          cex = 0.74, text.col = "black")
@@ -312,6 +313,25 @@ eta_max <- if (length(eta_frames)) {
   NULL
 }
 if (!is.null(eta_max)) eta_max[!is.finite(eta_max)] <- NA_real_
+
+# FUNWAVE's WaveHeight=T diagnostic is written by PREVIEW_MEAN as Hsig files.
+# It uses the model time step internally, so it is the correct way to assess
+# wave energy rather than comparing individual 7.5-second eta snapshots.
+hsig_paths <- list.files(results_dir, pattern = "^Hsig_[0-9]{5}$",
+                         full.names = TRUE)
+hsig_number <- as.integer(sub("^Hsig_", "", basename(hsig_paths)))
+hsig_paths <- hsig_paths[order(hsig_number)]
+hsig_frames <- lapply(hsig_paths, function(path) {
+  z <- read_text_model(path, basename(path))
+  if (!is.null(mask)) z[mask <= 0] <- NA_real_
+  z
+})
+hsig_max <- if (length(hsig_frames)) {
+  do.call(pmax, c(hsig_frames, na.rm = TRUE))
+} else {
+  NULL
+}
+if (!is.null(hsig_max)) hsig_max[!is.finite(hsig_max)] <- NA_real_
 eta_amplitude <- if (length(eta_frames)) max(vapply(eta_frames, function(z) {
   value <- max(abs(z), na.rm = TRUE)
   if (is.finite(value)) value else 0
@@ -344,7 +364,8 @@ direction_status <- if (forcing$inward_source_component > 0) {
 }
 knitr::kable(data.frame(
   source_edge = grid$source_edge,
-  requested_cross_shore_bearing_deg_true = forcing$requested_cross_shore_bearing_deg_true,
+  boundary_direction_statistic = forcing$boundary_direction_statistic,
+  requested_model_x_bearing_deg_true = forcing$requested_model_x_bearing_deg_true,
   realised_model_x_bearing_deg_true = forcing$model_x_bearing_deg_true,
   funwave_theta_peak_deg = forcing$funwave_theta_peak_deg,
   inward_source_component = forcing$inward_source_component,
@@ -355,8 +376,10 @@ knitr::kable(data.frame(
 ## Latest buoy forcing
 
 The irregular `WK_IRR` source is a TMA/JONSWAP-style parameterisation made from
-the newest usable IMOS Spotter observation. The buoy provides integral Hs, peak
-period and direction—not a phase-resolved spectrum.
+the newest usable IMOS Spotter observation. It uses the buoy **mean** direction
+and matching mean directional spread when present (`SSWMD` and `WMDS`), falling
+back to the peak values only when the mean values are unavailable. The buoy
+provides integral Hs and period parameters—not a phase-resolved spectrum.
 
 ```{r forcing}
 knitr::kable(forcing, digits = 2)
@@ -393,10 +416,11 @@ knitr::kable(data.frame(
 ## Source orientation diagnostic
 
 The dashed line is the internal wavemaker location. The red arrow is the
-observed peak-wave **travel** direction after conversion from the buoy's
-reported **from** direction into the actual rotated model axes. An arrow with a
-leftward component leaves the source side and is a forcing-geometry problem,
-not a bathymetry result.
+selected buoy wave-travel direction (mean when available; peak fallback) after
+conversion from the buoy's reported **from** direction into the actual rotated
+model axes. The grid is rebuilt daily so model +x is aligned to that travel
+direction. This avoids losing most of an oblique sea state into a lateral
+sponge; it does not artificially amplify the imposed wave height.
 
 ```{r forcing-geometry}
 theta <- forcing$funwave_theta_peak_deg * pi / 180
@@ -498,6 +522,9 @@ if (!length(final_sixth_indices)) {
 
 ## Maximum free-surface elevation
 
+This is the maximum positive instantaneous `eta` at each cell. It is useful for
+seeing crest reach, but it is **not** a wave-height statistic.
+
 ```{r hmax-eta, echo=FALSE}
 if (is.null(eta_max)) {
   plot.new(); text(0.5, 0.5, "No eta output was produced.")
@@ -508,6 +535,25 @@ if (is.null(eta_max)) {
   writeRaster(eta_max_wgs84, file.path(case_dir, "eta_max_wgs84.tif"), overwrite = TRUE)
   leaflet_model_map(eta_max_wgs84, hcl.colors(40, "YlOrRd", rev = TRUE),
                     positive_limits(eta_max), "Maximum free-surface elevation (m)")
+}
+```
+
+## Peak simulated significant wave height
+
+`WaveHeight = T` is evaluated by FUNWAVE's mean-wave diagnostic after the
+10-minute spin-up. The map below is the largest `Hsig` value at each cell from
+the saved mean-wave outputs, rather than a maximum of individual `eta` frames.
+
+```{r hsig-max, echo=FALSE}
+if (is.null(hsig_max)) {
+  plot.new(); text(0.5, 0.5, "No Hsig output was produced. Check STEADY_TIME and T_INTV_mean.")
+} else {
+  hsig_max_rotated <- model_to_rotated_raster(hsig_max, "Hsig maximum")
+  hsig_max_wgs84 <- write_model_output_rasters(hsig_max_rotated, "hsig_max")
+  hsig_max_wgs84 <- apply_wet_mask_wgs84(hsig_max_wgs84)
+  writeRaster(hsig_max_wgs84, file.path(case_dir, "hsig_max_wgs84.tif"), overwrite = TRUE)
+  leaflet_model_map(hsig_max_wgs84, hcl.colors(40, "YlOrRd", rev = TRUE),
+                    positive_limits(hsig_max), "Peak simulated significant wave height (m)")
 }
 ```
 

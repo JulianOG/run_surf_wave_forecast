@@ -83,9 +83,10 @@ domain_corners_ll <- rbind(
   c(142.2310, -38.3760)
 )
 
-# Compass bearing (degrees clockwise from north) across the domain, from the
-# buoy-side long edge toward the coast. It is normal to the long domain edges.
-model_x_bearing_guess <- 64  # 334 + 90, modulo 360
+# The grid is rebuilt daily with model +x aligned to the newest *mean* wave
+# travel direction.  A fixed coast-normal grid forced with an oblique sea state
+# lets much of the energy meet a lateral boundary before reaching the local
+# coast; this is a geometry issue, not a reason to remove the source sponge.
 dx <- 20                         # metres; use 10 m only after this run works
 total_time <- 1800               # seconds = 30 minutes
 plot_intv <- 7.5                 # seconds; four times the previous output rate
@@ -106,9 +107,36 @@ time_days <- nc$dim[["TIME"]]$vals
 time_utc <- as.POSIXct("1950-01-01 00:00:00", tz = "UTC") + time_days * 86400
 hs <- read_buoy("WSSH")
 tp <- read_buoy("WPPE")
-dir_from <- read_buoy("WPDI")
-# WPDS is the directional spread at the peak of the buoy spectrum.
-dir_spread <- if ("WPDS" %in% names(nc$var)) read_buoy("WPDS") else rep(NA_real_, length(hs))
+
+# Use the mean direction and matching mean directional spread when available.
+# IMOS calls these SSWMD and WMDS.  Retain the peak parameters as a per-record
+# fallback and save both in the output provenance table.
+dir_from_peak <- if ("WPDI" %in% names(nc$var)) {
+  read_buoy("WPDI")
+} else {
+  rep(NA_real_, length(hs))
+}
+dir_from_mean <- if ("SSWMD" %in% names(nc$var)) {
+  read_buoy("SSWMD")
+} else {
+  rep(NA_real_, length(hs))
+}
+spread_peak <- if ("WPDS" %in% names(nc$var)) {
+  read_buoy("WPDS")
+} else {
+  rep(NA_real_, length(hs))
+}
+spread_mean <- if ("WMDS" %in% names(nc$var)) {
+  read_buoy("WMDS")
+} else {
+  rep(NA_real_, length(hs))
+}
+
+use_mean_direction <- is.finite(dir_from_mean)
+dir_from <- ifelse(use_mean_direction, dir_from_mean, dir_from_peak)
+dir_spread <- ifelse(use_mean_direction & is.finite(spread_mean),
+                     spread_mean, spread_peak)
+direction_statistic <- ifelse(use_mean_direction, "mean", "peak fallback")
 qc <- ncvar_get(nc, "WAVE_quality_control")
 
 # QC 1 = good; 2 = not yet evaluated. Do not silently use questionable/bad.
@@ -117,14 +145,21 @@ usable <- qc %in% c(1, 2) & is.finite(hs) & is.finite(tp) & is.finite(dir_from) 
 if (!any(usable)) stop("No usable (QC 1 or 2) buoy observation is available.")
 i <- tail(which(usable), 1)
 
-# First-pass directional forcing: map the measured peak directional
-# spread (degrees) onto FUNWAVE WK_IRR's Sigma_Theta. Keep the documented
-# 20-degree default only when WPDS is absent or implausible.
+# Map the measured directional spread (degrees) onto FUNWAVE WK_IRR's
+# Sigma_Theta. Keep the documented 20-degree default only when the matching
+# IMOS spread is absent or implausible.
 spread_i <- dir_spread[i]
 sigma_theta <- if (is.finite(spread_i) && spread_i > 0 && spread_i <= 90) spread_i else 20.0
 
-# The Spotter direction is a compass FROM direction.
+# The Spotter direction is a compass FROM direction.  Align model +x with its
+# physical travel direction so the daily source is nearly normal to the model
+# boundary and does not immediately encounter a lateral sponge.
 bearing_to <- (dir_from[i] + 180) %% 360
+model_x_bearing_target <- bearing_to
+# With this local Oblique Mercator convention, PROJ alpha is 90 degrees from
+# the realised raster +x bearing.  The realised bearing is measured below and
+# recorded as a run diagnostic rather than assumed.
+model_x_bearing_guess <- (model_x_bearing_target + 90) %% 360
 
 # ----- Warp and coarsen the DEM ---------------------------------------------
 bathy <- rast(bathy_file)
@@ -228,13 +263,19 @@ theta_peak <- atan2(
 forcing <- data.frame(
   time_utc = format(time_utc[i], tz = "UTC", usetz = TRUE),
   qc = qc[i], hs_m = hs[i], tp_s = tp[i],
-  peak_direction_from_deg_true = dir_from[i],
-  peak_directional_spread_deg = spread_i,
+  boundary_direction_statistic = direction_statistic[i],
+  boundary_direction_from_deg_true = dir_from[i],
+  boundary_directional_spread_deg = spread_i,
+  mean_direction_from_deg_true = dir_from_mean[i],
+  mean_directional_spread_deg = spread_mean[i],
+  peak_direction_from_deg_true = dir_from_peak[i],
+  peak_directional_spread_deg = spread_peak[i],
   funwave_sigma_theta_deg = sigma_theta,
-  peak_direction_to_deg_true = bearing_to,
+  boundary_direction_to_deg_true = bearing_to,
   buoy_lon = crds(buoy_ll)[1, 1],
   buoy_lat = crds(buoy_ll)[1, 2],
-  requested_cross_shore_bearing_deg_true = model_x_bearing_guess,
+  requested_model_x_bearing_deg_true = model_x_bearing_target,
+  omerc_alpha_deg = model_x_bearing_guess,
   model_x_bearing_deg_true = model_x_bearing,
   model_y_bearing_deg_true = model_y_bearing,
   funwave_theta_peak_deg = theta_peak,
@@ -253,11 +294,21 @@ writeRaster(depth_gis, file.path(out_dir, "depth_20m_positive_water_depth.tif"),
             overwrite = TRUE)
 writeRaster(elevation, file.path(out_dir, "elevation_20m_warped.tif"),
             overwrite = TRUE)
-# Use the median water depth in the first 100 m offshore as DEP_WK. A source
+# An internal wavemaker emits both shoreward and seaward energy.  Place it
+# beyond a source-side sponge so that only the seaward component is absorbed;
+# removing that sponge cannot increase the shoreward component.
+source_sponge_width <- 100
+source_gap_after_sponge <- 60
+x_wk <- source_sponge_width + source_gap_after_sponge
+
+# Use the median water depth at the actual wavemaker strip for DEP_WK. A source
 # needs finite depth: if this strip is unexpectedly dry, stop rather than
 # generating an invalid case.
 n_source <- max(2, min(5, floor(100 / dx)))
-source_depth <- depth_funwave[seq_len(n_source), , drop = FALSE]
+wk_i <- max(1, min(mglob, round(x_wk / dx) + 1))
+wk_indices <- seq.int(max(1, wk_i - floor(n_source / 2)),
+                      min(mglob, wk_i + floor(n_source / 2)))
+source_depth <- depth_funwave[wk_indices, , drop = FALSE]
 dep_wk <- median(source_depth[source_depth > 0], na.rm = TRUE)
 if (!is.finite(dep_wk) || dep_wk <= 0) {
   stop("The buoy-side source strip is dry. Move the rotated model domain or inspect the DEM.")
@@ -278,14 +329,18 @@ if (abs(theta_peak) > 60) {
 freq_peak <- 1 / tp[i]
 freq_min <- max(0.04, freq_peak / 2.5)
 freq_max <- min(0.50, freq_peak * 3)
-x_wk <- n_source * dx + 20       # 20 m inside the buoy-side source edge
 
-# Do not place a sponge on the source edge: the previous 100 m sponge
-# overlapped the internal wavemaker and could damp generated wave energy
-# before it crossed the domain. Retain damping at the far and lateral edges.
-far_x_sponge <- 5 * dx
-sponge_west_width <- if (source_is_low_x) 0 else far_x_sponge
-sponge_east_width <- if (source_is_low_x) far_x_sponge else 0
+# Model x is always re-ordered so x = 0 is the buoy-side source edge, whether
+# the original rotated raster source was at low or high x.  The source sponge
+# is therefore always west in FUNWAVE's model coordinates.
+far_x_sponge <- max(5 * dx, 100)
+sponge_west_width <- source_sponge_width
+sponge_east_width <- far_x_sponge
+# State the full-span source explicitly rather than relying on FUNWAVE's very
+# large default Ywidth_WK. This makes it clear that WK_IRR is a line source
+# across the whole seaward side, not a point source at y = 0.
+y_wk <- (nglob - 1) * dx / 2
+ywidth_wk <- nglob * dx
 
 input <- c(
   "! Port Fairy: coarse first-pass FUNWAVE-TVD simulation",
@@ -294,14 +349,18 @@ input <- c(
   "PX = 2", "PY = 1",
   "DEPTH_TYPE = DATA", "DEPTH_FILE = depth.txt",
   "RESULT_FOLDER = results/",
-  sprintf("Mglob = %d", mglob), sprintf("Nglob = %d", nglob),
+  sprintf("Mglob = %.0f", mglob), sprintf("Nglob = %.0f", nglob),
   sprintf("TOTAL_TIME = %.1f", total_time),
   sprintf("PLOT_INTV = %.1f", plot_intv),
   "PLOT_INTV_STATION = 1.0", "SCREEN_INTV = 30.0",
+  "T_INTV_mean = 300.0", "STEADY_TIME = 900.0",
   sprintf("DX = %.1f", dx), sprintf("DY = %.1f", dx),
   "WAVEMAKER = WK_IRR",
   sprintf("DEP_WK = %.3f", dep_wk),
-  sprintf("Xc_WK = %.1f", x_wk), "Yc_WK = 0.0",
+  sprintf("Xc_WK = %.1f", x_wk),
+  sprintf("Yc_WK = %.1f", y_wk),
+  sprintf("Ywidth_WK = %.1f", ywidth_wk),
+  "Time_ramp = 10.0",
   sprintf("FreqPeak = %.5f", freq_peak),
   sprintf("FreqMin = %.5f", freq_min), sprintf("FreqMax = %.5f", freq_max),
   sprintf("Hmo = %.3f", hs[i]), "GammaTMA = 3.3",
@@ -326,11 +385,16 @@ grid_info <- data.frame(
   bathy_file = normalizePath(bathy_file),
   buoy_file = normalizePath(buoy_file),
   omerc_crs = omerc_crs,
-  requested_cross_shore_bearing_deg_true = model_x_bearing_guess,
+  requested_model_x_bearing_deg_true = model_x_bearing_target,
+  omerc_alpha_deg = model_x_bearing_guess,
   model_x_bearing_deg_true = model_x_bearing,
   model_y_bearing_deg_true = model_y_bearing,
   source_edge = source_edge,
   x_wk_m = x_wk,
+  y_wk_m = y_wk,
+  ywidth_wk_m = ywidth_wk,
+  source_sponge_width_m = source_sponge_width,
+  far_sponge_width_m = far_x_sponge,
   funwave_theta_peak_deg = theta_peak,
   inward_source_component = cos(theta_peak * pi / 180),
   xmin_m = xmin(template), xmax_m = xmax(template),

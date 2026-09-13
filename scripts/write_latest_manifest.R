@@ -15,7 +15,8 @@ site_url <- sub("/+$", "", args[3])
 asset_rel <- c(
   full_animation = "assets/port-fairy-full.gif",
   final_sixth_animation = "assets/port-fairy-final-sixth.gif",
-  maximum_free_surface_elevation_map = "assets/port-fairy-maximum-eta.png"
+  maximum_free_surface_elevation_map = "assets/port-fairy-maximum-eta.png",
+  peak_simulated_significant_wave_height_map = "assets/port-fairy-maximum-hsig.png"
 )
 asset_paths <- file.path(site_dir, asset_rel)
 if (!all(file.exists(asset_paths))) {
@@ -44,14 +45,15 @@ qc <- as.integer(forcing$qc[1])
 post_eligible <- identical(qc, 1L)
 
 manifest <- list(
-  schema_version = 1,
+  schema_version = 2,
   run_id = run_id,
   generated_utc = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
   report_url = paste0(site_url, "/"),
   assets = list(
     animation_full_gif_url = paste0(site_url, "/", asset_rel[["full_animation"]]),
     animation_final_sixth_gif_url = paste0(site_url, "/", asset_rel[["final_sixth_animation"]]),
-    maximum_free_surface_elevation_map_url = paste0(site_url, "/", asset_rel[["maximum_free_surface_elevation_map"]])
+    maximum_free_surface_elevation_map_url = paste0(site_url, "/", asset_rel[["maximum_free_surface_elevation_map"]]),
+    peak_simulated_significant_wave_height_map_url = paste0(site_url, "/", asset_rel[["peak_simulated_significant_wave_height_map"]])
   ),
   buoy = list(
     observation_time_utc = format(buoy_time_utc, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
@@ -62,13 +64,21 @@ manifest <- list(
     qc = qc,
     hs_m = as.numeric(forcing$hs_m[1]),
     tp_s = as.numeric(forcing$tp_s[1]),
+    boundary_direction_statistic = as.character(forcing$boundary_direction_statistic[1]),
+    boundary_direction_from_deg_true = as.numeric(forcing$boundary_direction_from_deg_true[1]),
+    boundary_direction_to_deg_true = as.numeric(forcing$boundary_direction_to_deg_true[1]),
+    boundary_directional_spread_deg = as.numeric(forcing$boundary_directional_spread_deg[1]),
+    mean_direction_from_deg_true = as.numeric(forcing$mean_direction_from_deg_true[1]),
+    mean_directional_spread_deg = as.numeric(forcing$mean_directional_spread_deg[1]),
     peak_direction_from_deg_true = as.numeric(forcing$peak_direction_from_deg_true[1]),
-    peak_direction_to_deg_true = as.numeric(forcing$peak_direction_to_deg_true[1])
+    peak_directional_spread_deg = as.numeric(forcing$peak_directional_spread_deg[1])
   ),
   model = list(
     duration_minutes = as.numeric(grid$total_time_s[1]) / 60,
     grid_resolution_m = as.numeric(grid$dx_m[1]),
     source_edge = as.character(grid$source_edge[1]),
+    realised_model_x_bearing_deg_true = as.numeric(grid$model_x_bearing_deg_true[1]),
+    funwave_theta_peak_deg = as.numeric(grid$funwave_theta_peak_deg[1]),
     status = "success"
   ),
   social = list(

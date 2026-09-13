@@ -19,13 +19,10 @@ RUN git clone https://github.com/fengyanshi/FUNWAVE-TVD.git funwave-src && \
 FROM ubuntu:24.04
 ARG DEBIAN_FRONTEND=noninteractive
 
-# gifski has no Ubuntu 24.04 r-cran package. Build it from CRAN, and verify
-# it before this image can be published. install.packages() can otherwise
-# return after a warning and leave a broken animation image behind.
+# The runtime image is intentionally limited to FUNWAVE/MPI. R packages are
+# installed on the GitHub Actions runner for each report build.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates build-essential cargo rustc openmpi-bin python3 r-base pandoc \
-    r-cran-base64enc r-cran-htmltools r-cran-jsonlite r-cran-knitr r-cran-ncdf4 r-cran-rmarkdown r-cran-terra && \
-    Rscript -e 'options(repos = c(CRAN = "https://cloud.r-project.org")); install.packages("gifski", type = "source"); if (!requireNamespace("gifski", quietly = TRUE)) stop("gifski did not install"); message("gifski version: ", as.character(utils::packageVersion("gifski")))' && \
+    ca-certificates openmpi-bin python3 && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/funwave/bin/funwave /opt/funwave/bin/funwave
