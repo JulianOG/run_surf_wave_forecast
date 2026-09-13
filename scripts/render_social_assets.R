@@ -145,6 +145,17 @@ add_wave_frame_annotation <- function(r_ll, elapsed_s) {
 
 mask_path <- file.path(results_dir, "mask_00000")
 mask <- if (file.exists(mask_path)) read_text_model(mask_path, "mask") else NULL
+mask_wgs84 <- NULL
+if (!is.null(mask)) {
+  mask_om <- model_to_rotated_raster(mask, depth_raster, source_is_low_x, "mask")
+  mask_wgs84 <- project(mask_om, "EPSG:4326", method = "near")
+}
+
+apply_wet_mask_wgs84 <- function(r_ll) {
+  if (is.null(mask_wgs84)) return(r_ll)
+  r_ll[is.na(mask_wgs84) | mask_wgs84 <= 0] <- NA_real_
+  r_ll
+}
 eta_paths <- list.files(results_dir, pattern = "^eta_[0-9]{5}$", full.names = TRUE)
 # The FUNWAVE suffix is an output-file number, not time in seconds.  Convert
 # it with PLOT_INTV before selecting the final sixth or annotating a frame.
@@ -171,6 +182,7 @@ draw_eta_frame <- function(k) {
   r_om <- model_to_rotated_raster(eta_frames[[k]], depth_raster, source_is_low_x,
                                   basename(eta_paths[k]))
   r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
+  r_ll <- apply_wet_mask_wgs84(r_ll)
   plot_geographic(
     r_ll,
     main = sprintf("Port Fairy free-surface elevation: t = %.1f s", eta_time[k]),
@@ -208,40 +220,33 @@ write_animation(seq_along(eta_frames), full_gif)
 final_sixth_indices <- which(eta_time >= (5 / 6) * grid$total_time_s)
 write_animation(final_sixth_indices, final_sixth_gif)
 
-# WaveHeight = T writes Hrms_##### and Havg_##### in this FUNWAVE revision.
-# Hrms is converted to an Hs estimate using Hs ~= sqrt(2) * Hrms. This is not
-# a maximum individual wave.
-hrms_paths <- list.files(results_dir, pattern = "^Hrms_[0-9]{5}$", full.names = TRUE)
-if (!length(hrms_paths)) stop("No Hrms outputs exist; WaveHeight = T should create Hrms_##### files.")
-hrms_ids <- as.integer(sub("^Hrms_", "", basename(hrms_paths)))
-hrms_paths <- hrms_paths[order(hrms_ids)]
-hs_peak_estimate <- sqrt(2) * maximum_model_field(
-  lapply(hrms_paths, read_text_model, label = "Hrms")
-)
-hs_peak_estimate[!is.finite(hs_peak_estimate)] <- NA_real_
-if (!is.null(mask)) hs_peak_estimate[mask <= 0] <- NA_real_
+# Maximum positive free-surface elevation at each grid cell across all saved
+# eta outputs. This is not individual wave height or significant wave height.
+eta_max <- do.call(pmax, c(eta_frames, na.rm = TRUE))
+eta_max[!is.finite(eta_max)] <- NA_real_
 
-hs_om <- model_to_rotated_raster(hs_peak_estimate, depth_raster, source_is_low_x,
-                                 "peak significant wave-height estimate")
-hs_ll <- project(hs_om, "EPSG:4326", method = "bilinear")
-hs_file <- file.path(assets_dir, "port-fairy-maximum-hs-estimate.png")
-hs_limit <- global(hs_ll, "max", na.rm = TRUE)[1, 1]
-if (!is.finite(hs_limit) || hs_limit <= 0) hs_limit <- 1e-8
-grDevices::png(hs_file, width = 1000, height = 750, res = 125)
+eta_max_om <- model_to_rotated_raster(eta_max, depth_raster, source_is_low_x,
+                                      "maximum free-surface elevation")
+eta_max_ll <- project(eta_max_om, "EPSG:4326", method = "bilinear")
+eta_max_ll <- apply_wet_mask_wgs84(eta_max_ll)
+eta_max_file <- file.path(assets_dir, "port-fairy-maximum-eta.png")
+eta_max_limit <- global(eta_max_ll, "max", na.rm = TRUE)[1, 1]
+if (!is.finite(eta_max_limit) || eta_max_limit <= 0) eta_max_limit <- 1e-8
+grDevices::png(eta_max_file, width = 1000, height = 750, res = 125)
 tryCatch(
   plot_geographic(
-    hs_ll, main = "Peak simulated significant wave-height estimate",
+    eta_max_ll, main = "Maximum free-surface elevation across 30 minutes",
     col = hcl.colors(40, "YlOrRd", rev = TRUE),
-    range = c(0, hs_limit),
+    range = c(0, eta_max_limit),
     show_legend = TRUE
   ),
   finally = grDevices::dev.off()
 )
-if (!file.exists(hs_file) || file.info(hs_file)$size == 0) {
-  stop("Could not create ", hs_file)
+if (!file.exists(eta_max_file) || file.info(eta_max_file)$size == 0) {
+  stop("Could not create ", eta_max_file)
 }
 
 message("Created social assets:")
 message("  ", full_gif)
 message("  ", final_sixth_gif)
-message("  ", hs_file)
+message("  ", eta_max_file)

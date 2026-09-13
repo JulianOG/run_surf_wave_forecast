@@ -24,7 +24,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 # return after a warning and leave a broken animation image behind.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates build-essential cargo rustc openmpi-bin python3 r-base pandoc \
-    r-cran-ggplot2 r-cran-jsonlite r-cran-knitr r-cran-ncdf4 r-cran-rmarkdown r-cran-terra && \
+    r-cran-ggplot2 r-cran-jsonlite r-cran-knitr r-cran-leaflet r-cran-ncdf4 r-cran-rmarkdown r-cran-terra && \
     Rscript -e 'options(repos = c(CRAN = "https://cloud.r-project.org")); install.packages("gifski", type = "source"); if (!requireNamespace("gifski", quietly = TRUE)) stop("gifski did not install"); message("gifski version: ", as.character(utils::packageVersion("gifski")))' && \
     rm -rf /var/lib/apt/lists/*
 

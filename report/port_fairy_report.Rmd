@@ -11,7 +11,10 @@ output:
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
                       fig.width = 11, fig.height = 6)
 
-suppressPackageStartupMessages(library(terra))
+suppressPackageStartupMessages({
+  library(terra)
+  library(leaflet)
+})
 
 case_dir <- normalizePath("../port_fairy/output", mustWork = TRUE)
 results_dir <- file.path(case_dir, "results")
@@ -182,6 +185,38 @@ plot_geographic <- function(r_ll, ..., show_legend = FALSE, range = NULL) {
   }
 }
 
+local_map_bounds <- function(r_ll, padding = 0.12) {
+  e <- ext(r_ll)
+  x_pad <- (xmax(e) - xmin(e)) * padding
+  y_pad <- (ymax(e) - ymin(e)) * padding
+  c(west = xmin(e) - x_pad, south = ymin(e) - y_pad,
+    east = xmax(e) + x_pad, north = ymax(e) + y_pad)
+}
+
+apply_wet_mask_wgs84 <- function(r_ll) {
+  if (is.null(mask_wgs84)) return(r_ll)
+  r_ll[is.na(mask_wgs84) | mask_wgs84 <= 0] <- NA_real_
+  r_ll
+}
+
+leaflet_model_map <- function(r_ll, palette, limits, legend_title) {
+  b <- local_map_bounds(r_ll)
+  pal <- colorNumeric(palette = palette, domain = limits, na.color = "transparent")
+  m <- leaflet(options = leafletOptions(minZoom = 13, maxZoom = 18,
+                                        maxBoundsViscosity = 1))
+  m <- addProviderTiles(m, "CartoDB.Positron")
+  m <- setMaxBounds(m, b[["west"]], b[["south"]], b[["east"]], b[["north"]])
+  m <- fitBounds(m, b[["west"]], b[["south"]], b[["east"]], b[["north"]])
+  m <- addRasterImage(m, r_ll, colors = pal, opacity = 0.88, project = FALSE)
+  m <- addPolylines(m, lng = model_outline_ll_xy[, 1], lat = model_outline_ll_xy[, 2],
+                    color = "black", weight = 2, group = "FUNWAVE grid")
+  m <- addCircleMarkers(m, lng = crds(buoy_ll)[1, 1], lat = crds(buoy_ll)[1, 2],
+                        radius = 5, color = "red", fillOpacity = 1,
+                        label = "Port Fairy wave buoy")
+  addLegend(m, position = "bottomright", pal = pal, values = limits,
+            title = legend_title, opacity = 0.88)
+}
+
 frame_local_time <- function(elapsed_s) {
   format(buoy_time_utc + elapsed_s, "%d %b %Y %H:%M %Z", tz = port_fairy_tz)
 }
@@ -219,12 +254,12 @@ depth_file_wgs84 <- project(depth_from_file_rotated, "EPSG:4326", method = "bili
 depth_delta_wgs84 <- project(depth_file_minus_raster, "EPSG:4326", method = "bilinear")
 
 eta <- read_field("eta")
-hmax <- read_field("Hmax")
-# WaveHeight = T writes Hrms_##### and Havg_##### files in this FUNWAVE
-# revision; it does not write WaveHeight_##### files.
-hrms_max <- maximum_model_field(read_all_fields("Hrms"))
-hs_peak_estimate <- if (is.null(hrms_max)) NULL else sqrt(2) * hrms_max
 mask <- read_field("mask")
+mask_wgs84 <- NULL
+if (!is.null(mask)) {
+  mask_rotated <- model_to_rotated_raster(mask, "mask")
+  mask_wgs84 <- project(mask_rotated, "EPSG:4326", method = "near")
+}
 
 eta_paths <- list.files(results_dir, pattern = "^eta_[0-9]{5}$",
                         full.names = TRUE)
@@ -241,6 +276,12 @@ eta_frames <- lapply(eta_paths, function(path) {
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
   z
 })
+eta_max <- if (length(eta_frames)) {
+  do.call(pmax, c(eta_frames, na.rm = TRUE))
+} else {
+  NULL
+}
+if (!is.null(eta_max)) eta_max[!is.finite(eta_max)] <- NA_real_
 eta_amplitude <- if (length(eta_frames)) max(vapply(eta_frames, function(z) {
   value <- max(abs(z), na.rm = TRUE)
   if (is.finite(value)) value else 0
@@ -364,7 +405,7 @@ if (is.null(depth_out)) {
 
 ## Latest free-surface elevation
 
-```{r eta, fig.cap='Latest modelled water-surface elevation reconstructed on the rotated grid and mapped in WGS84. Land/dry cells are masked.'}
+```{r eta, echo=FALSE}
 if (is.null(eta)) {
   plot.new(); text(0.5, 0.5, "No eta output was produced.")
 } else {
@@ -372,9 +413,10 @@ if (is.null(eta)) {
   if (!is.null(mask)) eta_plot[mask <= 0] <- NA_real_
   eta_rotated <- model_to_rotated_raster(eta_plot, "eta")
   eta_wgs84 <- write_model_output_rasters(eta_rotated, "eta_latest")
-  plot_geographic(eta_wgs84, main = "Latest water-surface elevation (WGS84)",
-                  col = hcl.colors(40, "Blue-Red 3"),
-                  range = eta_animation_limits, show_legend = TRUE)
+  eta_wgs84 <- apply_wet_mask_wgs84(eta_wgs84)
+  writeRaster(eta_wgs84, file.path(case_dir, "eta_latest_wgs84.tif"), overwrite = TRUE)
+  leaflet_model_map(eta_wgs84, hcl.colors(40, "Blue-Red 3"),
+                    eta_animation_limits, "Free-surface elevation (m)")
 }
 ```
 
@@ -395,6 +437,7 @@ if (!length(eta_frames)) {
   for (k in seq_along(eta_frames)) {
     r_om <- model_to_rotated_raster(eta_frames[[k]], basename(eta_paths[k]))
     r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
+    r_ll <- apply_wet_mask_wgs84(r_ll)
     plot_geographic(r_ll,
                     main = sprintf("Free-surface elevation: t = %.1f s (WGS84)", eta_time[k]),
                     col = hcl.colors(40, "Blue-Red 3"),
@@ -413,6 +456,7 @@ if (!length(final_sixth_indices)) {
   for (k in final_sixth_indices) {
     r_om <- model_to_rotated_raster(eta_frames[[k]], basename(eta_paths[k]))
     r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
+    r_ll <- apply_wet_mask_wgs84(r_ll)
     plot_geographic(r_ll,
                     main = sprintf("Free-surface elevation: t = %.1f s (WGS84)", eta_time[k]),
                     col = hcl.colors(40, "Blue-Red 3"),
@@ -422,37 +466,18 @@ if (!length(final_sixth_indices)) {
 }
 ```
 
-## Peak simulated significant wave-height estimate
-
-`WaveHeight = T` makes FUNWAVE write `Hrms_#####` (root-mean-square wave
-height) and `Havg_#####`, rather than files named `WaveHeight_#####`. The
-map below is the largest saved local estimate of $H_s ≈ \sqrt{2} H_{rms}$.
-It is a significant-wave-height estimate, **not** the height of the single
-largest individual wave.
-
-```{r peak-hs, fig.cap='Largest saved simulated significant wave-height estimate (sqrt(2) times Hrms), reconstructed on the rotated grid and mapped in WGS84.'}
-if (is.null(hs_peak_estimate)) {
-  plot.new(); text(0.5, 0.5, "No Hrms output was produced.")
-} else {
-  if (!is.null(mask)) hs_peak_estimate[mask <= 0] <- NA_real_
-  hs_rotated <- model_to_rotated_raster(hs_peak_estimate, "peak Hs estimate")
-  hs_wgs84 <- write_model_output_rasters(hs_rotated, "hs_peak_estimate_30min")
-  plot_geographic(hs_wgs84, main = "Peak simulated significant wave-height estimate (WGS84)",
-                  col = hcl.colors(40, "YlOrRd", rev = TRUE),
-                  range = positive_limits(hs_peak_estimate), show_legend = TRUE)
-}
-```
-
 ## Maximum free-surface elevation
 
-```{r hmax-eta, fig.cap='FUNWAVE Hmax: maximum free-surface elevation (not maximum wave height), shown for context.'}
-if (!is.null(hmax)) {
-  if (!is.null(mask)) hmax[mask <= 0] <- NA_real_
-  hmax_rotated <- model_to_rotated_raster(hmax, "Hmax")
-  hmax_wgs84 <- write_model_output_rasters(hmax_rotated, "eta_max")
-  plot_geographic(hmax_wgs84, main = "Maximum free-surface elevation, Hmax (WGS84)",
-                  col = hcl.colors(40, "YlOrRd", rev = TRUE),
-                  range = positive_limits(hmax), show_legend = TRUE)
+```{r hmax-eta, echo=FALSE}
+if (is.null(eta_max)) {
+  plot.new(); text(0.5, 0.5, "No eta output was produced.")
+} else {
+  eta_max_rotated <- model_to_rotated_raster(eta_max, "eta maximum")
+  eta_max_wgs84 <- write_model_output_rasters(eta_max_rotated, "eta_max")
+  eta_max_wgs84 <- apply_wet_mask_wgs84(eta_max_wgs84)
+  writeRaster(eta_max_wgs84, file.path(case_dir, "eta_max_wgs84.tif"), overwrite = TRUE)
+  leaflet_model_map(eta_max_wgs84, hcl.colors(40, "YlOrRd", rev = TRUE),
+                    positive_limits(eta_max), "Maximum free-surface elevation (m)")
 }
 ```
 
