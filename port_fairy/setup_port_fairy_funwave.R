@@ -230,7 +230,7 @@ forcing <- data.frame(
   qc = qc[i], hs_m = hs[i], tp_s = tp[i],
   peak_direction_from_deg_true = dir_from[i],
   peak_directional_spread_deg = spread_i,
-  funwave_sigma_theta_deg = sigma_theta
+  funwave_sigma_theta_deg = sigma_theta,
   peak_direction_to_deg_true = bearing_to,
   buoy_lon = crds(buoy_ll)[1, 1],
   buoy_lat = crds(buoy_ll)[1, 2],
