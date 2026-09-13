@@ -294,12 +294,21 @@ writeRaster(depth_gis, file.path(out_dir, "depth_20m_positive_water_depth.tif"),
             overwrite = TRUE)
 writeRaster(elevation, file.path(out_dir, "elevation_20m_warped.tif"),
             overwrite = TRUE)
-# An internal wavemaker emits both shoreward and seaward energy.  Place it
-# beyond a source-side sponge so that only the seaward component is absorbed;
-# removing that sponge cannot increase the shoreward component.
+# An internal wavemaker emits both shoreward and seaward energy. Keep its
+# spatial envelope clear of the buoy-side sponge so the source itself is not
+# numerically damped. `Delta_WK` is dimensionless in FUNWAVE, so specify the
+# desired physical envelope here and derive the daily Delta_WK below from the
+# peak wavelength at the source depth.
 source_sponge_width <- 100
 source_gap_after_sponge <- 60
-x_wk <- source_sponge_width + source_gap_after_sponge
+source_envelope_width_m <- 100       # full width spanning +/- 2 e-folds
+source_e_fold_half_width_m <- source_envelope_width_m / 4
+
+# FUNWAVE defines Width_WK = Delta_WK * Lp / 2 and suppresses viscosity
+# breaking within +/- Width_WK of Xc_WK.  For the 100 m Gaussian envelope,
+# this is a 111.8 m half-width, independent of the daily peak wavelength.
+funwave_width_wk_m <- source_e_fold_half_width_m * sqrt(80) / 2
+x_wk <- source_sponge_width + funwave_width_wk_m + source_gap_after_sponge
 
 # Use the median water depth at the actual wavemaker strip for DEP_WK. A source
 # needs finite depth: if this strip is unexpectedly dry, stop rather than
@@ -329,6 +338,35 @@ if (abs(theta_peak) > 60) {
 freq_peak <- 1 / tp[i]
 freq_min <- max(0.04, freq_peak / 2.5)
 freq_max <- min(0.50, freq_peak * 3)
+
+# Match FUNWAVE-TVD's Boussinesq dispersion relation when converting the
+# requested 100 m physical source envelope to its dimensionless Delta_WK.
+# This gives a smooth source spanning about five 20 m cells (from -2 to +2
+# e-folds) without altering the buoy-derived Hmo.
+funwave_peak_wavelength <- function(depth_m, frequency_hz) {
+  alpha <- -0.39
+  alpha1 <- alpha + 1 / 3
+  omega <- 2 * pi * frequency_hz
+  tb <- omega^2 * depth_m / 9.81
+  tc <- 1 + tb * alpha
+  discriminant <- tc^2 - 4 * alpha1 * tb
+  if (!is.finite(discriminant) || discriminant <= 0) {
+    stop("Could not calculate the FUNWAVE peak wavelength at the wavemaker.")
+  }
+  wavenumber <- sqrt((tc - sqrt(discriminant)) / (2 * alpha1)) / depth_m
+  if (!is.finite(wavenumber) || wavenumber <= 0) {
+    stop("Could not calculate a positive FUNWAVE peak wavenumber at the wavemaker.")
+  }
+  2 * pi / wavenumber
+}
+
+peak_wavelength_m <- funwave_peak_wavelength(dep_wk, freq_peak)
+delta_wk <- 2 * funwave_width_wk_m / peak_wavelength_m
+if (!is.finite(delta_wk) || delta_wk <= 0) {
+  stop("Could not calculate a positive Delta_WK for the physical source envelope.")
+}
+source_envelope_cells <- source_envelope_width_m / dx
+source_e_fold_cells <- source_e_fold_half_width_m / dx
 
 # Model x is always re-ordered so x = 0 is the buoy-side source edge, whether
 # the original rotated raster source was at low or high x.  The source sponge
@@ -361,6 +399,7 @@ input <- c(
   sprintf("Yc_WK = %.1f", y_wk),
   sprintf("Ywidth_WK = %.1f", ywidth_wk),
   "Time_ramp = 10.0",
+  sprintf("Delta_WK = %.5f", delta_wk),
   sprintf("FreqPeak = %.5f", freq_peak),
   sprintf("FreqMin = %.5f", freq_min), sprintf("FreqMax = %.5f", freq_max),
   sprintf("Hmo = %.3f", hs[i]), "GammaTMA = 3.3",
@@ -394,6 +433,14 @@ grid_info <- data.frame(
   y_wk_m = y_wk,
   ywidth_wk_m = ywidth_wk,
   source_sponge_width_m = source_sponge_width,
+  source_gap_after_sponge_m = source_gap_after_sponge,
+  source_envelope_width_m = source_envelope_width_m,
+  source_e_fold_half_width_m = source_e_fold_half_width_m,
+  source_envelope_width_cells = source_envelope_cells,
+  source_e_fold_half_width_cells = source_e_fold_cells,
+  funwave_width_wk_half_width_m = funwave_width_wk_m,
+  peak_wavelength_m = peak_wavelength_m,
+  delta_wk = delta_wk,
   far_sponge_width_m = far_x_sponge,
   funwave_theta_peak_deg = theta_peak,
   inward_source_component = cos(theta_peak * pi / 180),
@@ -409,3 +456,6 @@ message("Created FUNWAVE case in: ", out_dir)
 message("Latest buoy forcing: Hs=", round(hs[i], 2), " m, Tp=", round(tp[i], 1),
         " s, from=", round(dir_from[i]), " degrees, at ", forcing$time_utc)
 message("Grid: ", mglob, " x ", nglob, " at ", dx, " m")
+message("Wavemaker: Xc_WK=", round(x_wk, 1), " m; 100 m active envelope (",
+        round(source_envelope_cells, 1), " cells); Lp=", round(peak_wavelength_m, 1),
+        " m; Delta_WK=", round(delta_wk, 3))
