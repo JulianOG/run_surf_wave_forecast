@@ -25,9 +25,8 @@ permissions:
 env:
   # GHCR image names must be lowercase. Change this if the repository moves.
   IMAGE_NAME: ghcr.io/julianog/funwave-tvd
-  # v7 includes the standalone social-asset renderer.  Bump this tag so the
-  # image is rebuilt once and contains gifski from CRAN.
-  IMAGE_TAG: v7
+  # v8 contains the Leaflet package required by the interactive Port Fairy maps.
+  IMAGE_TAG: v8
 
 jobs:
   ensure-image:
@@ -96,11 +95,11 @@ jobs:
             "${{ needs.ensure-image.outputs.image }}" \
             /work/scripts/run_test_case.sh
 
-      - name: Verify the R GIF renderer in the image
+      - name: Verify the R rendering packages in the image
         run: |
           docker run --rm \
             "${{ needs.ensure-image.outputs.image }}" \
-            -lc 'Rscript -e "stopifnot(requireNamespace(\"gifski\", quietly = TRUE)); message(as.character(utils::packageVersion(\"gifski\")))"'
+            -lc 'Rscript -e "for (pkg in c(\"gifski\", \"leaflet\")) stopifnot(requireNamespace(pkg, quietly = TRUE)); message(paste(\"R packages available:\", paste(c(\"gifski\", \"leaflet\"), collapse = \", \")))"'
 
       - name: Build the rotated Port Fairy case from bathymetry and buoy data
         run: |
