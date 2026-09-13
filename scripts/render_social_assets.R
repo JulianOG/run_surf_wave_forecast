@@ -42,7 +42,7 @@ as_model_xy <- function(z, label = "model field") {
   z <- as.matrix(z)
   if (all(dim(z) == c(grid$Nglob, grid$Mglob))) return(t(z))
   if (all(dim(z) == c(grid$Mglob, grid$Nglob))) return(z)
-  stop(sprintf("%s has %d x %d values; expected %d x %d (y x x).",
+  stop(sprintf("%s has %.0f x %.0f values; expected %.0f x %.0f (y x x).",
                label, nrow(z), ncol(z), grid$Nglob, grid$Mglob))
 }
 
@@ -65,7 +65,7 @@ model_to_rotated_raster <- function(z, depth_raster, source_is_low_x,
   z <- as.matrix(z)
   expected <- c(grid$Mglob, grid$Nglob)
   if (!identical(dim(z), expected)) {
-    stop(sprintf("%s has %d x %d values; expected Mglob x Nglob = %d x %d.",
+    stop(sprintf("%s has %.0f x %.0f values; expected Mglob x Nglob = %.0f x %.0f.",
                  label, nrow(z), ncol(z), expected[1], expected[2]))
   }
 
@@ -134,7 +134,7 @@ add_wave_frame_annotation <- function(r_ll, elapsed_s) {
 
   label <- c(
     paste("Local:", frame_local_time(elapsed_s)),
-    sprintf("Model +%02d:%02d", elapsed_s %/% 60, elapsed_s %% 60),
+    sprintf("Model +%02.0f:%04.1f", floor(elapsed_s / 60), elapsed_s %% 60),
     sprintf("Buoy Hs %.2f m | Tp %.1f s", forcing$hs_m[1], forcing$tp_s[1]),
     sprintf("Waves from %.0f° (arrow travels to %.0f°)",
             forcing$peak_direction_from_deg_true[1], bearing_to)
@@ -173,7 +173,7 @@ draw_eta_frame <- function(k) {
   r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
   plot_geographic(
     r_ll,
-    main = sprintf("Port Fairy free-surface elevation: t = %d s", eta_time[k]),
+    main = sprintf("Port Fairy free-surface elevation: t = %.1f s", eta_time[k]),
     col = hcl.colors(40, "Blue-Red 3"), range = eta_limits, show_legend = TRUE
   )
   add_wave_frame_annotation(r_ll, eta_time[k])
