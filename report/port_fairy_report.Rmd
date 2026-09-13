@@ -13,7 +13,6 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
 
 suppressPackageStartupMessages({
   library(terra)
-  library(leaflet)
 })
 
 case_dir <- normalizePath("../port_fairy/output", mustWork = TRUE)
@@ -199,22 +198,53 @@ apply_wet_mask_wgs84 <- function(r_ll) {
   r_ll
 }
 
+interactive_map_number <- 0L
+
 leaflet_model_map <- function(r_ll, palette, limits, legend_title) {
+  # This uses Leaflet's browser library directly. It avoids a fragile R-leaflet
+  # build while retaining an interactive, pan-and-zoom map in the HTML report.
+  interactive_map_number <<- interactive_map_number + 1L
+  map_id <- paste0("port-fairy-map-", interactive_map_number)
   b <- local_map_bounds(r_ll)
-  pal <- colorNumeric(palette = palette, domain = limits, na.color = "transparent")
-  m <- leaflet(options = leafletOptions(minZoom = 13, maxZoom = 18,
-                                        maxBoundsViscosity = 1))
-  m <- addProviderTiles(m, "CartoDB.Positron")
-  m <- setMaxBounds(m, b[["west"]], b[["south"]], b[["east"]], b[["north"]])
-  m <- fitBounds(m, b[["west"]], b[["south"]], b[["east"]], b[["north"]])
-  m <- addRasterImage(m, r_ll, colors = pal, opacity = 0.88, project = FALSE)
-  m <- addPolylines(m, lng = model_outline_ll_xy[, 1], lat = model_outline_ll_xy[, 2],
-                    color = "black", weight = 2, group = "FUNWAVE grid")
-  m <- addCircleMarkers(m, lng = crds(buoy_ll)[1, 1], lat = crds(buoy_ll)[1, 2],
-                        radius = 5, color = "red", fillOpacity = 1,
-                        label = "Port Fairy wave buoy")
-  addLegend(m, position = "bottomright", pal = pal, values = limits,
-            title = legend_title, opacity = 0.88)
+  e <- ext(r_ll)
+
+  png_file <- tempfile(fileext = ".png")
+  on.exit(unlink(png_file), add = TRUE)
+  grDevices::png(png_file, width = ncol(r_ll), height = nrow(r_ll),
+                 bg = "transparent")
+  tryCatch({
+    par(mar = c(0, 0, 0, 0), xaxs = "i", yaxs = "i")
+    plot(r_ll, col = palette, range = limits, axes = FALSE, legend = FALSE,
+         box = FALSE, colNA = "transparent")
+  }, finally = grDevices::dev.off())
+  overlay_uri <- base64enc::dataURI(file = png_file, mime = "image/png")
+
+  outline_js <- paste(
+    sprintf("[%.8f, %.8f]", model_outline_ll_xy[, 2], model_outline_ll_xy[, 1]),
+    collapse = ", "
+  )
+  colours_js <- jsonlite::toJSON(palette, auto_unbox = TRUE)
+  title_js <- jsonlite::toJSON(legend_title, auto_unbox = TRUE)
+  js <- sprintf(
+    "(function() {\n  var map = L.map('%s', {minZoom: 13, maxZoom: 18, maxBounds: [[%.8f, %.8f], [%.8f, %.8f]], maxBoundsViscosity: 1.0});\n  map.fitBounds([[%.8f, %.8f], [%.8f, %.8f]]);\n  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {attribution: '&copy; OpenStreetMap contributors &copy; CARTO'}).addTo(map);\n  L.imageOverlay('%s', [[%.8f, %.8f], [%.8f, %.8f]], {opacity: 0.88, interactive: true}).addTo(map);\n  L.polyline([%s], {color: 'black', weight: 2}).addTo(map);\n  L.circleMarker([%.8f, %.8f], {radius: 5, color: 'red', fillColor: 'red', fillOpacity: 1}).bindTooltip('Port Fairy wave buoy').addTo(map);\n  var legend = L.control({position: 'bottomright'});\n  legend.onAdd = function() { var d = L.DomUtil.create('div', 'port-fairy-legend'); d.innerHTML = '<b>' + %s + '</b><div class=\"port-fairy-scale\" style=\"background: linear-gradient(to right, ' + %s.join(', ') + ');\"></div><span>%.2f</span><span style=\"float:right\">%.2f</span>'; return d; };\n  legend.addTo(map);\n})();",
+    map_id, b[["south"]], b[["west"]], b[["north"]], b[["east"]],
+    b[["south"]], b[["west"]], b[["north"]], b[["east"]], overlay_uri,
+    ymin(e), xmin(e), ymax(e), xmax(e), outline_js,
+    crds(buoy_ll)[1, 2], crds(buoy_ll)[1, 1], title_js, colours_js,
+    limits[1], limits[2]
+  )
+  dependency <- htmltools::htmlDependency(
+    name = "leaflet", version = "1.9.4",
+    src = c(href = "https://unpkg.com/leaflet@1.9.4/dist"),
+    stylesheet = "leaflet.css", script = "leaflet.js"
+  )
+  htmltools::attachDependencies(
+    htmltools::tagList(
+      htmltools::tags$style(".port-fairy-map {height: 560px; width: 100%;} .port-fairy-legend {background: rgba(255,255,255,0.90); padding: 6px 8px; line-height: 1.25; min-width: 190px;} .port-fairy-scale {height: 10px; margin: 4px 0 1px;}"),
+      htmltools::tags$div(id = map_id, class = "port-fairy-map"),
+      htmltools::tags$script(htmltools::HTML(js))
+    ), dependency
+  )
 }
 
 frame_local_time <- function(elapsed_s) {
