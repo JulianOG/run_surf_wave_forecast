@@ -376,7 +376,7 @@ if (!is.null(eta_max)) eta_max[!is.finite(eta_max)] <- NA_real_
 
 # FUNWAVE's WaveHeight=T diagnostic is written by PREVIEW_MEAN as Hsig files.
 # It uses the model time step internally, so it is the correct way to assess
-# wave energy rather than comparing individual 7.5-second eta snapshots.
+# wave energy rather than comparing individual 15-second eta snapshots.
 hsig_paths <- list.files(results_dir, pattern = "^Hsig_[0-9]{5}$",
                          full.names = TRUE)
 hsig_number <- as.integer(sub("^Hsig_", "", basename(hsig_paths)))
@@ -404,11 +404,22 @@ eta_animation_limits <- c(-eta_amplitude, eta_amplitude)
 # Both animations are conventional six-second looping GIFs. Their frame
 # intervals adapt to the number of saved outputs.
 gif_duration_s <- 6
-full_gif_interval <- gif_duration_s / max(1, length(eta_frames))
+# eta_00000 is the zero-time initial condition, not an evolved model state.
+# It is retained in eta_max but deliberately excluded from the full GIF.
+full_animation_indices <- which(eta_time > 0)
+full_gif_interval <- gif_duration_s / max(1, length(full_animation_indices))
 final_sixth_indices <- which(eta_time >= final_sixth_start_s)
 final_sixth_gif_interval <- gif_duration_s / max(1, length(final_sixth_indices))
-eta_saved_start_label <- if (length(eta_time)) elapsed_clock(min(eta_time)) else "n/a"
-eta_saved_end_label <- if (length(eta_time)) elapsed_clock(max(eta_time)) else "n/a"
+full_animation_saved_start_label <- if (length(full_animation_indices)) {
+  elapsed_clock(min(eta_time[full_animation_indices]))
+} else {
+  "n/a"
+}
+full_animation_saved_end_label <- if (length(full_animation_indices)) {
+  elapsed_clock(max(eta_time[full_animation_indices]))
+} else {
+  "n/a"
+}
 final_sixth_saved_start_label <- if (length(final_sixth_indices)) {
   elapsed_clock(min(eta_time[final_sixth_indices]))
 } else {
@@ -552,21 +563,22 @@ if (is.null(eta)) {
 
 ## Free-surface animations
 
-Both GIFs use all available eta snapshots at a shared colour scale. Knitr's
-gifski hook creates them directly from this Rmd, after each raw output has been
-reconstructed on the rotated FUNWAVE grid and projected to WGS84. Each GIF
-loops for six seconds: one represents the complete `r simulation_label` run
-(saved frames `r eta_saved_start_label`--`r eta_saved_end_label`), and the other
-shows the final one-sixth (configured `r final_sixth_start_label`--`r simulation_end_label`;
+Both GIFs use a shared colour scale. Knitr's gifski hook creates them directly
+from this Rmd, after each raw output has been reconstructed on the rotated
+FUNWAVE grid and projected to WGS84. The zero-time initial condition is
+intentionally omitted from the full animation. Each GIF loops for six seconds:
+one represents the complete `r simulation_label` run (saved frames
+`r full_animation_saved_start_label`--`r full_animation_saved_end_label`), and
+the other shows the final one-sixth (configured `r final_sixth_start_label`--`r simulation_end_label`;
 saved frames `r final_sixth_saved_start_label`--`r final_sixth_saved_end_label`).
 
-### Full `r simulation_label` simulation
+### Full `r simulation_label` simulation: saved `r full_animation_saved_start_label`--`r full_animation_saved_end_label`
 
 ```{r eta-animation-full, fig.show='animate', animation.hook='gifski', interval=full_gif_interval, aniopts='loop', fig.width=8, fig.height=6, dpi=100}
-if (!length(eta_frames)) {
-  plot.new(); text(0.5, 0.5, "No eta output was produced.")
+if (!length(full_animation_indices)) {
+  plot.new(); text(0.5, 0.5, "No evolved eta output was produced.")
 } else {
-  for (k in seq_along(eta_frames)) {
+  for (k in full_animation_indices) {
     r_om <- model_to_rotated_raster(eta_frames[[k]], basename(eta_paths[k]))
     r_om <- apply_dem_water_mask_rotated(r_om)
     r_ll <- project(r_om, "EPSG:4326", method = "bilinear")

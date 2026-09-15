@@ -2,7 +2,7 @@
 
 This directory contains the case preparation for the Port Fairy nearshore-wave
 diagnostic. It turns the latest usable offshore buoy observation and a local
-digital elevation model into a 10 m FUNWAVE-TVD simulation and supporting
+digital elevation model into a 5 m FUNWAVE-TVD simulation and supporting
 geospatial diagnostics.
 
 ## Domain and grid
@@ -10,11 +10,11 @@ geospatial diagnostics.
 The model domain is a rectangular local Oblique Mercator grid spanning the
 offshore Port Fairy buoy-side boundary and the adjacent coast. The model x-axis
 is oriented from the source edge toward the coast. The current demonstration
-configuration uses 10 m cells and a 15-minute simulation, producing outputs at
-7.5-second intervals. The full animation therefore has 120 frames. The
-final-one-sixth animation is selected from 12:30 onward; its last saved frame
-is 14:52.5 because FUNWAVE writes the final pre-end-time snapshot at this
-output cadence.
+configuration uses 5 m cells and a 10-minute simulation, producing outputs at
+15-second intervals. FUNWAVE saves 40 snapshots from 00:00 to 09:45; the full
+animation deliberately skips the 00:00 initial condition, so it has 39 frames
+from 00:15 to 09:45. The final-one-sixth animation is configured from 08:20
+onward and therefore uses the available 08:30--09:45 snapshots.
 
 The DEM is resampled directly onto the complete rotated rectangle. FUNWAVE is
 given positive water depth, with land and missing DEM cells set to zero so its
@@ -56,7 +56,7 @@ is flagged because it requires careful interpretation.
 
 `Delta_WK` is dimensionless: it scales with the daily peak wavelength rather
 than being a distance in metres. This case fixes the *physical* active Gaussian
-envelope at 100 m, measured from -2 to +2 e-folds (ten 10 m grid cells). The
+envelope at 100 m, measured from -2 to +2 e-folds (twenty 5 m grid cells). The
 script derives the daily `Delta_WK` from the peak wavelength at the actual
 source depth. For a 200--300 m peak wavelength it is about 0.75--1.12.
 
@@ -72,10 +72,10 @@ uses `WK_NEW_IRR` rather than `WK_IRR`.
 
 | Setting | Port Fairy | [Norfolk, Virginia field case](https://github.com/fengyanshi/Norfolk/blob/245e6d7bd082927f6a03921933db8b22f8263436/FUNWAVE/Work/input_mac.txt) | [Saco Bay field calibration](https://github.com/fengyanshi/BENCHMARK_FUNWAVE/blob/86ef91cfe2eec841ba2ba2776db058d8a08a95e4/SacoBay/saco_1/input.txt) |
 | --- | --- | --- | --- |
-| Grid spacing | 10 m | 1.5 m | 2 m |
+| Grid spacing | 5 m | 1.5 m | 2 m |
 | Wavemaker | `WK_IRR` | `WK_IRR` | `WK_NEW_IRR` |
 | `Delta_WK` | Derived daily; typically 0.75–1.12 | 2.0 | 2.0 |
-| Active source envelope | 100 m (10 cells) | About 67 m (45 cells) | About 162 m (81 cells) |
+| Active source envelope | 100 m (20 cells) | About 67 m (45 cells) | About 162 m (81 cells) |
 | `CFL` | 0.5 | 0.15 | 0.05 |
 | Bottom drag `Cd` | 0.002 | 0.002 | 0.002 |
 | `VISCOSITY_BREAKING` | `T` | `T` | `F` |
@@ -115,9 +115,9 @@ configuration.
    [breaker source](https://github.com/fengyanshi/FUNWAVE-TVD/blob/b4c322e7582035ee19df8e6409a3dfedaff1cb96/src/breaker.F), it sets the
    threshold for starting breaking, so lowering it toward 0.45 tends to start
    breaking earlier rather than preserve larger nearshore elevations.
-5. **Resolution and side losses:** this 10 m grid is still 5–7 times coarser
+5. **Resolution and side losses:** this 5 m grid is still 2.5–3.3 times coarser
    than the comparison studies. It is the next physical sensitivity after the
-   20 m case; a 5 m nearshore nest is the subsequent test if feasible. Also
+   10 m case; a finer nearshore nest is the subsequent test if feasible. Also
    inspect energy near the north/south sponges: oblique components from
    directional spreading can be absorbed there. FUNWAVE author Jim Kirby notes
    that 1–2 m grids are normally used for comparable nearshore work in a
@@ -139,7 +139,7 @@ all saved `eta` fields, not an estimate of individual-wave height.
 
 ## Interpretation limits
 
-This case is an experimental model diagnostic. Its 10 m grid improves the
+This case is an experimental model diagnostic. Its 5 m grid improves the
 representation of nearshore bathymetry and breaking relative to the earlier
 20 m case, but it remains too coarse for detailed surf-zone processes,
 individual structures, navigation or safety decisions. A higher-resolution,

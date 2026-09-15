@@ -133,7 +133,7 @@ jobs:
         run: |
           Rscript port_fairy/setup_port_fairy_funwave.R
 
-      - name: Run the 10 m, 15-minute Port Fairy FUNWAVE case
+      - name: Run the 5 m, 10-minute Port Fairy FUNWAVE case
         run: |
           docker run --rm \
             --user root \

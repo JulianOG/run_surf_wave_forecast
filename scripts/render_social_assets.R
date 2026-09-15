@@ -277,7 +277,10 @@ write_animation <- function(indices, output_file) {
 
 full_gif <- file.path(assets_dir, "port-fairy-full.gif")
 final_sixth_gif <- file.path(assets_dir, "port-fairy-final-sixth.gif")
-write_animation(seq_along(eta_frames), full_gif)
+# eta_00000 is the zero-time initial condition, not an evolved model state.
+# Deliberately exclude it from the full animation while retaining it for eta_max.
+full_indices <- which(eta_time > 0)
+write_animation(full_indices, full_gif)
 final_sixth_indices <- which(eta_time >= final_sixth_start_s)
 write_animation(final_sixth_indices, final_sixth_gif)
 
@@ -348,7 +351,9 @@ if (!file.exists(hsig_max_file) || file.info(hsig_max_file)$size == 0) {
 
 message("Created social assets:")
 message("Animation timing: full run 0--", sprintf("%.1f", grid$total_time_s[1]),
-        " s; saved frames 0--", sprintf("%.1f", max(eta_time)),
+        " s; full GIF skips 0.0 s and uses saved frames ",
+        sprintf("%.1f", min(eta_time[full_indices])), "--",
+        sprintf("%.1f", max(eta_time[full_indices])),
         " s; final-sixth saved frames ", sprintf("%.1f", min(eta_time[final_sixth_indices])),
         "--", sprintf("%.1f", max(eta_time[final_sixth_indices])), " s")
 message("  ", full_gif)
