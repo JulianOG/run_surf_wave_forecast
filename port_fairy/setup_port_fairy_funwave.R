@@ -296,41 +296,12 @@ writeRaster(elevation, file.path(out_dir, "elevation_20m_warped.tif"),
             overwrite = TRUE)
 # An internal wavemaker emits both shoreward and seaward energy. Keep its
 # spatial envelope clear of the buoy-side sponge so the source itself is not
-# numerically damped. `Delta_WK` is dimensionless in FUNWAVE, so specify the
-# desired physical envelope here and derive the daily Delta_WK below from the
-# peak wavelength at the source depth.
+# numerically damped. `Delta_WK` is dimensionless. Very large values make the
+# WK_IRR source normalisation ill-conditioned, so use the moderate value 2.0
+# used by the published Norfolk and Saco Bay FUNWAVE examples.
 source_sponge_width <- 100
 source_gap_after_sponge <- 60
-source_envelope_width_m <- 1000      # full width spanning +/- 2 e-folds
-source_e_fold_half_width_m <- source_envelope_width_m / 4
-
-# FUNWAVE defines Width_WK = Delta_WK * Lp / 2 and suppresses viscosity
-# breaking within +/- Width_WK of Xc_WK.  For the 1 km Gaussian envelope,
-# this is a 1118.0 m half-width, independent of the daily peak wavelength.
-funwave_width_wk_m <- source_e_fold_half_width_m * sqrt(80) / 2
-x_wk <- source_sponge_width + funwave_width_wk_m + source_gap_after_sponge
-
-# Use the median water depth at the actual wavemaker strip for DEP_WK. A source
-# needs finite depth: if this strip is unexpectedly dry, stop rather than
-# generating an invalid case.
-n_source <- max(2, min(5, floor(100 / dx)))
-wk_i <- max(1, min(mglob, round(x_wk / dx) + 1))
-wk_indices <- seq.int(max(1, wk_i - floor(n_source / 2)),
-                      min(mglob, wk_i + floor(n_source / 2)))
-source_depth <- depth_funwave[wk_indices, , drop = FALSE]
-dep_wk <- median(source_depth[source_depth > 0], na.rm = TRUE)
-if (!is.finite(dep_wk) || dep_wk <= 0) {
-  stop("The buoy-side source strip is dry. Move the rotated model domain or inspect the DEM.")
-}
-
-# Warn when the recorded waves propagate away from the buoy-side source.
-if (abs(theta_peak) > 60) {
-  warning(sprintf(
-    paste0("Latest waves are %.1f degrees from the inward source normal. ",
-           "This is strongly oblique; inspect the forcing-geometry diagnostic ",
-           "before interpreting this run."), theta_peak
-  ))
-}
+delta_wk <- 2.0
 
 # FUNWAVE WK_IRR is a TMA/JONSWAP-style irregular internal wavemaker. The
 # monthly IMOS file provides integral Hs/Tp/direction, not a phase-resolved
@@ -339,11 +310,8 @@ freq_peak <- 1 / tp[i]
 freq_min <- max(0.04, freq_peak / 2.5)
 freq_max <- min(0.50, freq_peak * 3)
 
-# Match FUNWAVE-TVD's Boussinesq dispersion relation when converting the
-# requested 1 km physical source envelope to its dimensionless Delta_WK.
-# This gives a smooth source spanning about fifty 20 m cells (from -2 to +2
-# e-folds) without altering the buoy-derived Hmo. It is a wide-source
-# sensitivity configuration, not a change to the buoy-derived sea state.
+# Match FUNWAVE-TVD's Boussinesq dispersion relation when calculating the
+# peak wavelength at the wavemaker depth.
 funwave_peak_wavelength <- function(depth_m, frequency_hz) {
   alpha <- -0.39
   alpha1 <- alpha + 1 / 3
@@ -361,13 +329,53 @@ funwave_peak_wavelength <- function(depth_m, frequency_hz) {
   2 * pi / wavenumber
 }
 
-peak_wavelength_m <- funwave_peak_wavelength(dep_wk, freq_peak)
-delta_wk <- 2 * funwave_width_wk_m / peak_wavelength_m
-if (!is.finite(delta_wk) || delta_wk <= 0) {
-  stop("Could not calculate a positive Delta_WK for the physical source envelope.")
+# Use the median water depth at the actual wavemaker strip for DEP_WK. A source
+# needs finite depth: if this strip is unexpectedly dry, stop rather than
+# generating an invalid case.
+n_source <- max(2, min(5, floor(100 / dx)))
+source_depth_at_x <- function(x_position_m) {
+  wk_i <- max(1, min(mglob, round(x_position_m / dx) + 1))
+  wk_indices <- seq.int(max(1, wk_i - floor(n_source / 2)),
+                        min(mglob, wk_i + floor(n_source / 2)))
+  source_depth <- depth_funwave[wk_indices, , drop = FALSE]
+  depth_m <- median(source_depth[source_depth > 0], na.rm = TRUE)
+  if (!is.finite(depth_m) || depth_m <= 0) {
+    stop("The buoy-side source strip is dry. Move the rotated model domain or inspect the DEM.")
+  }
+  depth_m
 }
+
+# FUNWAVE defines Width_WK = Delta_WK * Lp / 2. Place the paddle so this
+# complete source half-width begins 60 m shoreward of the source-side sponge.
+# Width depends on source depth, so use a short fixed-point iteration to place
+# the paddle and calculate DEP_WK consistently on the daily bathymetry.
+x_wk <- source_sponge_width + source_gap_after_sponge + 250
+for (iteration in seq_len(4)) {
+  dep_wk <- source_depth_at_x(x_wk)
+  peak_wavelength_m <- funwave_peak_wavelength(dep_wk, freq_peak)
+  funwave_width_wk_m <- delta_wk * peak_wavelength_m / 2
+  x_wk <- source_sponge_width + source_gap_after_sponge + funwave_width_wk_m
+}
+dep_wk <- source_depth_at_x(x_wk)
+peak_wavelength_m <- funwave_peak_wavelength(dep_wk, freq_peak)
+funwave_width_wk_m <- delta_wk * peak_wavelength_m / 2
+x_wk <- source_sponge_width + source_gap_after_sponge + funwave_width_wk_m
+
+# The full active Gaussian span quoted in the report is from -2 to +2
+# e-folds. At Delta_WK = 2 this is 0.8944 times the peak wavelength.
+source_e_fold_half_width_m <- delta_wk * peak_wavelength_m / sqrt(80)
+source_envelope_width_m <- 4 * source_e_fold_half_width_m
 source_envelope_cells <- source_envelope_width_m / dx
 source_e_fold_cells <- source_e_fold_half_width_m / dx
+
+# Warn when the recorded waves propagate away from the buoy-side source.
+if (abs(theta_peak) > 60) {
+  warning(sprintf(
+    paste0("Latest waves are %.1f degrees from the inward source normal. ",
+           "This is strongly oblique; inspect the forcing-geometry diagnostic ",
+           "before interpreting this run."), theta_peak
+  ))
+}
 
 # Model x is always re-ordered so x = 0 is the buoy-side source edge, whether
 # the original rotated raster source was at low or high x.  The source sponge
@@ -457,6 +465,7 @@ message("Created FUNWAVE case in: ", out_dir)
 message("Latest buoy forcing: Hs=", round(hs[i], 2), " m, Tp=", round(tp[i], 1),
         " s, from=", round(dir_from[i]), " degrees, at ", forcing$time_utc)
 message("Grid: ", mglob, " x ", nglob, " at ", dx, " m")
-message("Wavemaker: Xc_WK=", round(x_wk, 1), " m; 1000 m active envelope (",
+message("Wavemaker: Xc_WK=", round(x_wk, 1), " m; ",
+        round(source_envelope_width_m, 1), " m active Gaussian envelope (",
         round(source_envelope_cells, 1), " cells); Lp=", round(peak_wavelength_m, 1),
         " m; Delta_WK=", round(delta_wk, 3))

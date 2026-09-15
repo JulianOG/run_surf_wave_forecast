@@ -52,21 +52,22 @@ is flagged because it requires careful interpretation.
 ## Wavemaker source width
 
 `Delta_WK` is dimensionless: it scales with the daily peak wavelength rather
-than being a distance in metres. The current configuration requests a 1,000 m
-active Gaussian source envelope (from -2 to +2 e-folds), or 50 cells on the
-20 m Port Fairy grid. The script calculates the corresponding `Delta_WK` from
-the peak wavelength at the wavemaker depth and moves the paddle centre far
-enough from the source-side sponge to keep the source region clear of damping.
+than being a distance in metres. This case fixes it at `2.0`, a moderate value
+used by the published Norfolk and Saco Bay FUNWAVE field examples. The script
+calculates the peak wavelength at the wavemaker depth, then sets
+`Width_WK = Delta_WK * Lp / 2` and moves the paddle far enough from the
+source-side sponge that the full source half-width is outside the damping zone.
 
-This is a source-resolution sensitivity configuration. It does not increase
-the buoy-derived `Hmo`; it tests whether a broad, well-resolved internal source
-avoids artificial attenuation close to the paddle. It should be assessed using
-the simulated wave height immediately shoreward of the source as well as at the
-coast.
+The reported active Gaussian width is the distance from -2 to +2 e-folds. For
+the usual 200--300 m peak wavelength on this 20 m grid, it is roughly
+180--270 m (9--14 cells). This is deliberately wide enough to resolve the
+source without making the `WK_IRR` source normalisation unstable. It does not
+increase the buoy-derived `Hmo` and is not a substitute for calibration or a
+finer surf-zone grid.
 
 | Case | Grid spacing | `Delta_WK` | Active Gaussian source width | Width in cells |
 | --- | ---: | ---: | ---: | ---: |
-| Port Fairy wide-source configuration | 20 m | Calculated daily; about 7.5–11.2 for 200–300 m peak wavelengths | 1,000 m | 50 |
+| Port Fairy `WK_IRR` configuration | 20 m | 2.0 | About 180–270 m for 200–300 m peak wavelengths | 9–14 |
 | [Norfolk, Virginia field case](https://github.com/fengyanshi/Norfolk/blob/245e6d7bd082927f6a03921933db8b22f8263436/FUNWAVE/Work/input_mac.txt) | 1.5 m | 2.0 | 67 m | 45 |
 | [Saco Bay field calibration](https://github.com/fengyanshi/BENCHMARK_FUNWAVE/blob/86ef91cfe2eec841ba2ba2776db058d8a08a95e4/SacoBay/saco_1/input.txt) | 2 m | 2.0 | 162 m | 81 |
 
@@ -80,10 +81,12 @@ for further cases and implementation details.
 ## Outputs
 
 `output/input.txt` and `output/depth.txt` are the FUNWAVE inputs. Model fields
-are written to `output/results/`. The report reads these fields, applies the
-FUNWAVE wet/dry mask before and after geographic reprojection, and produces
-maps in WGS84. The maximum-elevation diagnostic is the cellwise maximum of all
-saved `eta` fields, not an estimate of individual-wave height.
+are written to `output/results/`. The report reads these fields, applies both
+the DEM-derived water mask and the FUNWAVE wet/dry mask before geographic
+reprojection, and reapplies nearest-neighbour versions of those masks in WGS84.
+Interactive maps are restricted to the local model extent and shown at a
+compact height. The maximum-elevation diagnostic is the cellwise maximum of
+all saved `eta` fields, not an estimate of individual-wave height.
 
 ## Interpretation limits
 

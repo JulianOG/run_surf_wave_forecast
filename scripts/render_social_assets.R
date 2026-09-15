@@ -92,7 +92,27 @@ outline_from_raster <- function(r) {
 }
 
 depth_raster <- rast(file.path(case_dir, "depth_20m_positive_water_depth.tif"))
+depth_from_file <- read_text_model(file.path(case_dir, "depth.txt"), "depth.txt")
 source_is_low_x <- identical(grid$source_edge, "minimum rotated x")
+
+# Use the same DEM-derived water mask as the report. Apply it in model and
+# rotated-grid coordinates before projection, then again after projection to
+# prevent interpolation from colouring land pixels.
+dem_water_model <- is.finite(depth_from_file) & depth_from_file > 0
+dem_water_mask_om <- ifel(depth_raster > 0, 1, 0)
+dem_water_mask_wgs84 <- project(dem_water_mask_om, "EPSG:4326", method = "near")
+
+apply_dem_water_mask_model <- function(z) {
+  z <- as.matrix(z)
+  z[!dem_water_model] <- NA_real_
+  z
+}
+
+apply_dem_water_mask_om <- function(r_om) {
+  r_om[is.na(dem_water_mask_om) | dem_water_mask_om <= 0] <- NA_real_
+  r_om
+}
+
 buoy_ll <- vect(matrix(c(forcing$buoy_lon, forcing$buoy_lat), ncol = 2),
                 type = "points", crs = "EPSG:4326")
 model_outline_ll_xy <- crds(project(outline_from_raster(depth_raster), "EPSG:4326"))
@@ -166,9 +186,19 @@ if (!is.null(mask)) {
   mask_wgs84 <- project(mask_om, "EPSG:4326", method = "near")
 }
 
-apply_wet_mask_wgs84 <- function(r_ll) {
+apply_water_masks_wgs84 <- function(r_ll) {
+  dem_mask <- dem_water_mask_wgs84
+  if (!compareGeom(dem_mask, r_ll, stopOnError = FALSE)) {
+    dem_mask <- resample(dem_mask, r_ll, method = "near")
+  }
+  r_ll[is.na(dem_mask) | dem_mask <= 0] <- NA_real_
+
   if (is.null(mask_wgs84)) return(r_ll)
-  r_ll[is.na(mask_wgs84) | mask_wgs84 <= 0] <- NA_real_
+  wet_mask <- mask_wgs84
+  if (!compareGeom(wet_mask, r_ll, stopOnError = FALSE)) {
+    wet_mask <- resample(wet_mask, r_ll, method = "near")
+  }
+  r_ll[is.na(wet_mask) | wet_mask <= 0] <- NA_real_
   r_ll
 }
 eta_paths <- list.files(results_dir, pattern = "^eta_[0-9]{5}$", full.names = TRUE)
@@ -184,7 +214,7 @@ if (!length(eta_paths)) stop("No eta outputs exist; cannot make social GIFs.")
 eta_frames <- lapply(eta_paths, function(path) {
   z <- read_text_model(path, basename(path))
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
-  z
+  apply_dem_water_mask_model(z)
 })
 eta_amplitude <- max(vapply(eta_frames, function(z) {
   value <- max(abs(z), na.rm = TRUE)
@@ -196,8 +226,9 @@ eta_limits <- c(-eta_amplitude, eta_amplitude)
 draw_eta_frame <- function(k) {
   r_om <- model_to_rotated_raster(eta_frames[[k]], depth_raster, source_is_low_x,
                                   basename(eta_paths[k]))
+  r_om <- apply_dem_water_mask_om(r_om)
   r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
-  r_ll <- apply_wet_mask_wgs84(r_ll)
+  r_ll <- apply_water_masks_wgs84(r_ll)
   plot_geographic(
     r_ll,
     main = sprintf("Port Fairy free-surface elevation: t = %.1f s", eta_time[k]),
@@ -242,8 +273,9 @@ eta_max[!is.finite(eta_max)] <- NA_real_
 
 eta_max_om <- model_to_rotated_raster(eta_max, depth_raster, source_is_low_x,
                                       "maximum free-surface elevation")
+eta_max_om <- apply_dem_water_mask_om(eta_max_om)
 eta_max_ll <- project(eta_max_om, "EPSG:4326", method = "bilinear")
-eta_max_ll <- apply_wet_mask_wgs84(eta_max_ll)
+eta_max_ll <- apply_water_masks_wgs84(eta_max_ll)
 eta_max_file <- file.path(assets_dir, "port-fairy-maximum-eta.png")
 eta_max_limit <- global(eta_max_ll, "max", na.rm = TRUE)[1, 1]
 if (!is.finite(eta_max_limit) || eta_max_limit <= 0) eta_max_limit <- 1e-8
@@ -272,13 +304,14 @@ hsig_paths <- hsig_paths[order(hsig_number)]
 hsig_frames <- lapply(hsig_paths, function(path) {
   z <- read_text_model(path, basename(path))
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
-  z
+  apply_dem_water_mask_model(z)
 })
 hsig_max <- maximum_model_field(hsig_frames)
 hsig_max_om <- model_to_rotated_raster(hsig_max, depth_raster, source_is_low_x,
                                        "peak simulated significant wave height")
+hsig_max_om <- apply_dem_water_mask_om(hsig_max_om)
 hsig_max_ll <- project(hsig_max_om, "EPSG:4326", method = "bilinear")
-hsig_max_ll <- apply_wet_mask_wgs84(hsig_max_ll)
+hsig_max_ll <- apply_water_masks_wgs84(hsig_max_ll)
 hsig_max_file <- file.path(assets_dir, "port-fairy-maximum-hsig.png")
 hsig_max_limit <- global(hsig_max_ll, "max", na.rm = TRUE)[1, 1]
 if (!is.finite(hsig_max_limit) || hsig_max_limit <= 0) hsig_max_limit <- 1e-8

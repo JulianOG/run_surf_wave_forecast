@@ -122,6 +122,10 @@ symmetric_raster_limits <- function(r) {
 }
 
 write_model_output_rasters <- function(r_om, stem, method = "bilinear") {
+  # Keep water-level products on cells that are water in the DEM before any
+  # geographic reprojection. A second nearest-neighbour mask is applied after
+  # projection to keep interpolation from bleeding values onto land pixels.
+  r_om <- apply_dem_water_mask_rotated(r_om)
   writeRaster(r_om, file.path(case_dir, paste0(stem, "_rotated_omerc.tif")),
               overwrite = TRUE)
   r_ll <- project(r_om, "EPSG:4326", method = method)
@@ -147,6 +151,24 @@ depth_raster <- rast(file.path(case_dir, "depth_20m_positive_water_depth.tif"))
 elevation_raster <- rast(file.path(case_dir, "elevation_20m_warped.tif"))
 depth_from_file <- read_text_model(file.path(case_dir, "depth.txt"), "depth.txt")
 source_is_low_x <- identical(grid$source_edge, "minimum rotated x")
+
+# This mask comes from the warped DEM supplied to FUNWAVE, not from the
+# model's dynamic wet/dry field. It deliberately limits displayed water levels
+# to DEM cells with positive water depth.
+dem_water_model <- is.finite(depth_from_file) & depth_from_file > 0
+dem_water_mask_rotated <- ifel(depth_raster > 0, 1, 0)
+dem_water_mask_wgs84 <- project(dem_water_mask_rotated, "EPSG:4326", method = "near")
+
+apply_dem_water_mask_model <- function(z) {
+  z <- as.matrix(z)
+  z[!dem_water_model] <- NA_real_
+  z
+}
+
+apply_dem_water_mask_rotated <- function(r_om) {
+  r_om[is.na(dem_water_mask_rotated) | dem_water_mask_rotated <= 0] <- NA_real_
+  r_om
+}
 
 # Reconstruct depth.txt on the exact native Omerc raster, then derive maps
 # from that raster. This is the same pathway used for FUNWAVE outputs below.
@@ -202,7 +224,7 @@ plot_geographic <- function(r_ll, ..., show_legend = FALSE, range = NULL) {
   }
 }
 
-local_map_bounds <- function(r_ll, padding = 0.12) {
+local_map_bounds <- function(r_ll, padding = 0.04) {
   e <- ext(r_ll)
   x_pad <- (xmax(e) - xmin(e)) * padding
   y_pad <- (ymax(e) - ymin(e)) * padding
@@ -210,16 +232,27 @@ local_map_bounds <- function(r_ll, padding = 0.12) {
     east = xmax(e) + x_pad, north = ymax(e) + y_pad)
 }
 
-apply_wet_mask_wgs84 <- function(r_ll) {
+apply_water_masks_wgs84 <- function(r_ll) {
+  dem_mask <- dem_water_mask_wgs84
+  if (!compareGeom(dem_mask, r_ll, stopOnError = FALSE)) {
+    dem_mask <- resample(dem_mask, r_ll, method = "near")
+  }
+  r_ll[is.na(dem_mask) | dem_mask <= 0] <- NA_real_
+
   if (is.null(mask_wgs84)) return(r_ll)
-  r_ll[is.na(mask_wgs84) | mask_wgs84 <= 0] <- NA_real_
+  wet_mask <- mask_wgs84
+  if (!compareGeom(wet_mask, r_ll, stopOnError = FALSE)) {
+    wet_mask <- resample(wet_mask, r_ll, method = "near")
+  }
+  r_ll[is.na(wet_mask) | wet_mask <= 0] <- NA_real_
   r_ll
 }
 
 leaflet_model_map <- function(r_ll, palette, limits, legend_title) {
   b <- local_map_bounds(r_ll)
   pal <- colorNumeric(palette = palette, domain = limits, na.color = "transparent")
-  m <- leaflet(options = leafletOptions(minZoom = 14, maxZoom = 18,
+  m <- leaflet(width = "100%", height = 480,
+               options = leafletOptions(minZoom = 14, maxZoom = 18,
                                         maxBoundsViscosity = 1))
   # CARTO's public tile endpoint now returns an API-key warning in the report.
   # Use standard OpenStreetMap tiles instead; they require no project key.
@@ -305,7 +338,7 @@ eta_time <- eta_file_number * grid$plot_intv_s
 eta_frames <- lapply(eta_paths, function(path) {
   z <- read_text_model(path, basename(path))
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
-  z
+  apply_dem_water_mask_model(z)
 })
 eta_max <- if (length(eta_frames)) {
   do.call(pmax, c(eta_frames, na.rm = TRUE))
@@ -324,7 +357,7 @@ hsig_paths <- hsig_paths[order(hsig_number)]
 hsig_frames <- lapply(hsig_paths, function(path) {
   z <- read_text_model(path, basename(path))
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
-  z
+  apply_dem_water_mask_model(z)
 })
 hsig_max <- if (length(hsig_frames)) {
   do.call(pmax, c(hsig_frames, na.rm = TRUE))
@@ -354,7 +387,9 @@ depth_out <- read_static_model("dep.out")
 
 This is a 20 m, 30-minute grid and forcing diagnostic—not a validated harbour
 forecast. Each raw FUNWAVE text field is first rebuilt on the exact rotated
-Oblique Mercator grid, then reprojected to WGS84 for geographic plotting.
+Oblique Mercator grid, DEM-masked to water cells, then reprojected to WGS84
+for geographic plotting. The interactive maps are limited to the local model
+extent and use a compact display height.
 
 ```{r forcing-status}
 direction_status <- if (forcing$inward_source_component > 0) {
@@ -463,11 +498,11 @@ if (is.null(depth_out)) {
 if (is.null(eta)) {
   plot.new(); text(0.5, 0.5, "No eta output was produced.")
 } else {
-  eta_plot <- eta
+  eta_plot <- apply_dem_water_mask_model(eta)
   if (!is.null(mask)) eta_plot[mask <= 0] <- NA_real_
   eta_rotated <- model_to_rotated_raster(eta_plot, "eta")
   eta_wgs84 <- write_model_output_rasters(eta_rotated, "eta_latest")
-  eta_wgs84 <- apply_wet_mask_wgs84(eta_wgs84)
+  eta_wgs84 <- apply_water_masks_wgs84(eta_wgs84)
   writeRaster(eta_wgs84, file.path(case_dir, "eta_latest_wgs84.tif"), overwrite = TRUE)
   leaflet_model_map(eta_wgs84, hcl.colors(40, "Blue-Red 3"),
                     eta_animation_limits, "Free-surface elevation (m)")
@@ -490,8 +525,9 @@ if (!length(eta_frames)) {
 } else {
   for (k in seq_along(eta_frames)) {
     r_om <- model_to_rotated_raster(eta_frames[[k]], basename(eta_paths[k]))
+    r_om <- apply_dem_water_mask_rotated(r_om)
     r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
-    r_ll <- apply_wet_mask_wgs84(r_ll)
+    r_ll <- apply_water_masks_wgs84(r_ll)
     plot_geographic(r_ll,
                     main = sprintf("Free-surface elevation: t = %.1f s (WGS84)", eta_time[k]),
                     col = hcl.colors(40, "Blue-Red 3"),
@@ -509,8 +545,9 @@ if (!length(final_sixth_indices)) {
 } else {
   for (k in final_sixth_indices) {
     r_om <- model_to_rotated_raster(eta_frames[[k]], basename(eta_paths[k]))
+    r_om <- apply_dem_water_mask_rotated(r_om)
     r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
-    r_ll <- apply_wet_mask_wgs84(r_ll)
+    r_ll <- apply_water_masks_wgs84(r_ll)
     plot_geographic(r_ll,
                     main = sprintf("Free-surface elevation: t = %.1f s (WGS84)", eta_time[k]),
                     col = hcl.colors(40, "Blue-Red 3"),
@@ -531,7 +568,7 @@ if (is.null(eta_max)) {
 } else {
   eta_max_rotated <- model_to_rotated_raster(eta_max, "eta maximum")
   eta_max_wgs84 <- write_model_output_rasters(eta_max_rotated, "eta_max")
-  eta_max_wgs84 <- apply_wet_mask_wgs84(eta_max_wgs84)
+  eta_max_wgs84 <- apply_water_masks_wgs84(eta_max_wgs84)
   writeRaster(eta_max_wgs84, file.path(case_dir, "eta_max_wgs84.tif"), overwrite = TRUE)
   leaflet_model_map(eta_max_wgs84, hcl.colors(40, "YlOrRd", rev = TRUE),
                     positive_limits(eta_max), "Maximum free-surface elevation (m)")
@@ -550,7 +587,7 @@ if (is.null(hsig_max)) {
 } else {
   hsig_max_rotated <- model_to_rotated_raster(hsig_max, "Hsig maximum")
   hsig_max_wgs84 <- write_model_output_rasters(hsig_max_rotated, "hsig_max")
-  hsig_max_wgs84 <- apply_wet_mask_wgs84(hsig_max_wgs84)
+  hsig_max_wgs84 <- apply_water_masks_wgs84(hsig_max_wgs84)
   writeRaster(hsig_max_wgs84, file.path(case_dir, "hsig_max_wgs84.tif"), overwrite = TRUE)
   leaflet_model_map(hsig_max_wgs84, hcl.colors(40, "YlOrRd", rev = TRUE),
                     positive_limits(hsig_max), "Peak simulated significant wave height (m)")
