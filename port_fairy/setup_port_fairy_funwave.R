@@ -301,12 +301,12 @@ writeRaster(elevation, file.path(out_dir, "elevation_20m_warped.tif"),
 # peak wavelength at the source depth.
 source_sponge_width <- 100
 source_gap_after_sponge <- 60
-source_envelope_width_m <- 100       # full width spanning +/- 2 e-folds
+source_envelope_width_m <- 1000      # full width spanning +/- 2 e-folds
 source_e_fold_half_width_m <- source_envelope_width_m / 4
 
 # FUNWAVE defines Width_WK = Delta_WK * Lp / 2 and suppresses viscosity
-# breaking within +/- Width_WK of Xc_WK.  For the 100 m Gaussian envelope,
-# this is a 111.8 m half-width, independent of the daily peak wavelength.
+# breaking within +/- Width_WK of Xc_WK.  For the 1 km Gaussian envelope,
+# this is a 1118.0 m half-width, independent of the daily peak wavelength.
 funwave_width_wk_m <- source_e_fold_half_width_m * sqrt(80) / 2
 x_wk <- source_sponge_width + funwave_width_wk_m + source_gap_after_sponge
 
@@ -340,9 +340,10 @@ freq_min <- max(0.04, freq_peak / 2.5)
 freq_max <- min(0.50, freq_peak * 3)
 
 # Match FUNWAVE-TVD's Boussinesq dispersion relation when converting the
-# requested 100 m physical source envelope to its dimensionless Delta_WK.
-# This gives a smooth source spanning about five 20 m cells (from -2 to +2
-# e-folds) without altering the buoy-derived Hmo.
+# requested 1 km physical source envelope to its dimensionless Delta_WK.
+# This gives a smooth source spanning about fifty 20 m cells (from -2 to +2
+# e-folds) without altering the buoy-derived Hmo. It is a wide-source
+# sensitivity configuration, not a change to the buoy-derived sea state.
 funwave_peak_wavelength <- function(depth_m, frequency_hz) {
   alpha <- -0.39
   alpha1 <- alpha + 1 / 3
@@ -456,6 +457,6 @@ message("Created FUNWAVE case in: ", out_dir)
 message("Latest buoy forcing: Hs=", round(hs[i], 2), " m, Tp=", round(tp[i], 1),
         " s, from=", round(dir_from[i]), " degrees, at ", forcing$time_utc)
 message("Grid: ", mglob, " x ", nglob, " at ", dx, " m")
-message("Wavemaker: Xc_WK=", round(x_wk, 1), " m; 100 m active envelope (",
+message("Wavemaker: Xc_WK=", round(x_wk, 1), " m; 1000 m active envelope (",
         round(source_envelope_cells, 1), " cells); Lp=", round(peak_wavelength_m, 1),
         " m; Delta_WK=", round(delta_wk, 3))
