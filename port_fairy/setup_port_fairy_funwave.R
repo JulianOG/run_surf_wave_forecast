@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
-# Build a first, deliberately coarse (20 m) 30-minute FUNWAVE-TVD case for
-# Port Fairy from the Victorian DEM and the newest usable Spotter observation.
+# Build a 10 m, 15-minute FUNWAVE-TVD resolution sensitivity for Port Fairy
+# from the Victorian DEM and the newest usable Spotter observation.
 #
 # The model uses an Oblique Mercator grid. Its +x direction is perpendicular to
 # the long buoy-side model boundary, pointing from that edge toward the coast.
@@ -87,9 +87,12 @@ domain_corners_ll <- rbind(
 # travel direction.  A fixed coast-normal grid forced with an oblique sea state
 # lets much of the energy meet a lateral boundary before reaching the local
 # coast; this is a geometry issue, not a reason to remove the source sponge.
-dx <- 20                         # metres; use 10 m only after this run works
-total_time <- 1800               # seconds = 30 minutes
-plot_intv <- 7.5                 # seconds; four times the previous output rate
+dx <- 10                         # metres
+total_time <- 900                # seconds = 15 minutes
+plot_intv <- 7.5                 # seconds; 120 full-run animation frames
+mean_wave_interval <- 300        # seconds
+steady_time <- 300               # seconds; leaves two mean-wave windows
+grid_tag <- paste0(sprintf("%.0f", dx), "m")
 
 # ----- Latest good / not-yet-evaluated buoy observation --------------------
 nc <- nc_open(buoy_file)
@@ -290,18 +293,28 @@ write.table(
   t(depth_funwave), file.path(out_dir, "depth.txt"),
   row.names = FALSE, col.names = FALSE, quote = FALSE
 )
-writeRaster(depth_gis, file.path(out_dir, "depth_20m_positive_water_depth.tif"),
+writeRaster(depth_gis,
+            file.path(out_dir, paste0("depth_", grid_tag, "_positive_water_depth.tif")),
             overwrite = TRUE)
-writeRaster(elevation, file.path(out_dir, "elevation_20m_warped.tif"),
+writeRaster(elevation,
+            file.path(out_dir, paste0("elevation_", grid_tag, "_warped.tif")),
             overwrite = TRUE)
 # An internal wavemaker emits both shoreward and seaward energy. Keep its
 # spatial envelope clear of the buoy-side sponge so the source itself is not
-# numerically damped. `Delta_WK` is dimensionless. Very large values make the
-# WK_IRR source normalisation ill-conditioned, so use the moderate value 2.0
-# used by the published Norfolk and Saco Bay FUNWAVE examples.
+# numerically damped. `Delta_WK` is dimensionless, so describe this source by
+# its physical active Gaussian envelope and derive the daily Delta value from
+# the peak wavelength at the source depth.
 source_sponge_width <- 100
 source_gap_after_sponge <- 60
-delta_wk <- 2.0
+source_envelope_width_m <- 100       # full span from -2 to +2 e-folds
+source_e_fold_half_width_m <- source_envelope_width_m / 4
+
+# FUNWAVE defines Width_WK = Delta_WK * Lp / 2. For a 100 m active envelope,
+# the corresponding FUNWAVE width parameter is 111.8 m. Its upstream edge is
+# 60 m clear of the 100 m source-side sponge; the paddle centre is therefore
+# ~271.8 m from the model source edge on every daily case.
+funwave_width_wk_m <- source_e_fold_half_width_m * sqrt(80) / 2
+x_wk <- source_sponge_width + source_gap_after_sponge + funwave_width_wk_m
 
 # FUNWAVE WK_IRR is a TMA/JONSWAP-style irregular internal wavemaker. The
 # monthly IMOS file provides integral Hs/Tp/direction, not a phase-resolved
@@ -332,7 +345,10 @@ funwave_peak_wavelength <- function(depth_m, frequency_hz) {
 # Use the median water depth at the actual wavemaker strip for DEP_WK. A source
 # needs finite depth: if this strip is unexpectedly dry, stop rather than
 # generating an invalid case.
-n_source <- max(2, min(5, floor(100 / dx)))
+# Sample the full physical 100 m source span when calculating DEP_WK. This
+# remains 100 m wide after halving the grid spacing rather than accidentally
+# becoming a 50 m sample of the source bathymetry.
+n_source <- max(3, 2 * ceiling((source_envelope_width_m / 2) / dx) + 1)
 source_depth_at_x <- function(x_position_m) {
   wk_i <- max(1, min(mglob, round(x_position_m / dx) + 1))
   wk_indices <- seq.int(max(1, wk_i - floor(n_source / 2)),
@@ -345,26 +361,13 @@ source_depth_at_x <- function(x_position_m) {
   depth_m
 }
 
-# FUNWAVE defines Width_WK = Delta_WK * Lp / 2. Place the paddle so this
-# complete source half-width begins 60 m shoreward of the source-side sponge.
-# Width depends on source depth, so use a short fixed-point iteration to place
-# the paddle and calculate DEP_WK consistently on the daily bathymetry.
-x_wk <- source_sponge_width + source_gap_after_sponge + 250
-for (iteration in seq_len(4)) {
-  dep_wk <- source_depth_at_x(x_wk)
-  peak_wavelength_m <- funwave_peak_wavelength(dep_wk, freq_peak)
-  funwave_width_wk_m <- delta_wk * peak_wavelength_m / 2
-  x_wk <- source_sponge_width + source_gap_after_sponge + funwave_width_wk_m
-}
 dep_wk <- source_depth_at_x(x_wk)
 peak_wavelength_m <- funwave_peak_wavelength(dep_wk, freq_peak)
-funwave_width_wk_m <- delta_wk * peak_wavelength_m / 2
-x_wk <- source_sponge_width + source_gap_after_sponge + funwave_width_wk_m
+delta_wk <- 2 * funwave_width_wk_m / peak_wavelength_m
+if (!is.finite(delta_wk) || delta_wk <= 0) {
+  stop("Could not calculate a positive Delta_WK for the 100 m source envelope.")
+}
 
-# The full active Gaussian span quoted in the report is from -2 to +2
-# e-folds. At Delta_WK = 2 this is 0.8944 times the peak wavelength.
-source_e_fold_half_width_m <- delta_wk * peak_wavelength_m / sqrt(80)
-source_envelope_width_m <- 4 * source_e_fold_half_width_m
 source_envelope_cells <- source_envelope_width_m / dx
 source_e_fold_cells <- source_e_fold_half_width_m / dx
 
@@ -383,6 +386,9 @@ if (abs(theta_peak) > 60) {
 far_x_sponge <- max(5 * dx, 100)
 sponge_west_width <- source_sponge_width
 sponge_east_width <- far_x_sponge
+# Preserve the prior 60 m physical lateral damping width across the resolution
+# change. At 10 m this is six cells, not the former 3 * dx expression.
+lateral_sponge_width <- 60
 # State the full-span source explicitly rather than relying on FUNWAVE's very
 # large default Ywidth_WK. This makes it clear that WK_IRR is a line source
 # across the whole seaward side, not a point source at y = 0.
@@ -390,9 +396,9 @@ y_wk <- (nglob - 1) * dx / 2
 ywidth_wk <- nglob * dx
 
 input <- c(
-  "! Port Fairy: coarse first-pass FUNWAVE-TVD simulation",
+  "! Port Fairy: 10 m, 15-minute FUNWAVE-TVD resolution sensitivity",
   "! Generated by port_fairy/setup_port_fairy_funwave.R",
-  "TITLE = Port_Fairy_latest_buoy_30min",
+  paste0("TITLE = Port_Fairy_latest_buoy_", sprintf("%.0f", total_time / 60), "min"),
   "PX = 2", "PY = 1",
   "DEPTH_TYPE = DATA", "DEPTH_FILE = depth.txt",
   "RESULT_FOLDER = results/",
@@ -400,7 +406,8 @@ input <- c(
   sprintf("TOTAL_TIME = %.1f", total_time),
   sprintf("PLOT_INTV = %.1f", plot_intv),
   "PLOT_INTV_STATION = 1.0", "SCREEN_INTV = 30.0",
-  "T_INTV_mean = 300.0", "STEADY_TIME = 900.0",
+  sprintf("T_INTV_mean = %.1f", mean_wave_interval),
+  sprintf("STEADY_TIME = %.1f", steady_time),
   sprintf("DX = %.1f", dx), sprintf("DY = %.1f", dx),
   "WAVEMAKER = WK_IRR",
   sprintf("DEP_WK = %.3f", dep_wk),
@@ -419,9 +426,9 @@ input <- c(
   "Csp = 0.0", "CDsponge = 1.0",
   sprintf("Sponge_west_width = %.1f", sponge_west_width),
   sprintf("Sponge_east_width = %.1f", sponge_east_width),
-  sprintf("Sponge_south_width = %.1f", 3 * dx),
-  sprintf("Sponge_north_width = %.1f", 3 * dx),
-  "Cd = 0.0025", "CFL = 0.5", "FroudeCap = 1.0", "MinDepth = 0.05",
+  sprintf("Sponge_south_width = %.1f", lateral_sponge_width),
+  sprintf("Sponge_north_width = %.1f", lateral_sponge_width),
+  "Cd = 0.002", "CFL = 0.5", "FroudeCap = 1.0", "MinDepth = 0.05",
   "VISCOSITY_BREAKING = T", "Cbrk1 = 0.65", "Cbrk2 = 0.35",
   "DEPTH_OUT = T", "U = T", "V = T", "ETA = T", "Hmax = T",
   "WaveHeight = T", "MASK = T", "NumberStations = 0"
@@ -451,12 +458,14 @@ grid_info <- data.frame(
   peak_wavelength_m = peak_wavelength_m,
   delta_wk = delta_wk,
   far_sponge_width_m = far_x_sponge,
+  lateral_sponge_width_m = lateral_sponge_width,
   funwave_theta_peak_deg = theta_peak,
   inward_source_component = cos(theta_peak * pi / 180),
   xmin_m = xmin(template), xmax_m = xmax(template),
   ymin_m = ymin(template), ymax_m = ymax(template),
   dx_m = dx, dy_m = dx, Mglob = mglob, Nglob = nglob,
   total_time_s = total_time, plot_intv_s = plot_intv,
+  mean_wave_interval_s = mean_wave_interval, steady_time_s = steady_time,
   x_axis = "buoy-side edge to coast", y_axis = "right-handed rotated y"
 )
 write.csv(grid_info, file.path(out_dir, "grid_metadata.csv"), row.names = FALSE)

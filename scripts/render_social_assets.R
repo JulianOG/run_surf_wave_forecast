@@ -28,6 +28,14 @@ grid <- read.csv(file.path(case_dir, "grid_metadata.csv"), check.names = FALSE)
 if (nrow(forcing) != 1 || nrow(grid) != 1) {
   stop("Expected one row in forcing and grid metadata files.")
 }
+if (!is.finite(grid$dx_m[1]) || !is.finite(grid$total_time_s[1]) ||
+    !is.finite(grid$plot_intv_s[1]) || grid$dx_m[1] <= 0 ||
+    grid$total_time_s[1] <= 0 || grid$plot_intv_s[1] <= 0) {
+  stop("Grid metadata must contain positive dx_m, total_time_s and plot_intv_s values.")
+}
+grid_tag <- paste0(sprintf("%.0f", grid$dx_m[1]), "m")
+simulation_minutes <- grid$total_time_s[1] / 60
+final_sixth_start_s <- (5 / 6) * grid$total_time_s[1]
 
 buoy_time_utc <- as.POSIXct(
   sub(" UTC$", "", forcing$time_utc[1]),
@@ -91,7 +99,9 @@ outline_from_raster <- function(r) {
   ), type = "polygons", crs = crs(r))
 }
 
-depth_raster <- rast(file.path(case_dir, "depth_20m_positive_water_depth.tif"))
+depth_raster <- rast(file.path(
+  case_dir, paste0("depth_", grid_tag, "_positive_water_depth.tif")
+))
 depth_from_file <- read_text_model(file.path(case_dir, "depth.txt"), "depth.txt")
 source_is_low_x <- identical(grid$source_edge, "minimum rotated x")
 
@@ -210,6 +220,11 @@ eta_paths <- eta_paths[eta_order]
 eta_file_number <- eta_file_number[eta_order]
 eta_time <- eta_file_number * grid$plot_intv_s
 if (!length(eta_paths)) stop("No eta outputs exist; cannot make social GIFs.")
+if (any(!is.finite(eta_time)) || any(eta_time < 0) ||
+    max(eta_time) > grid$total_time_s[1] + grid$plot_intv_s[1] ||
+    max(eta_time) < grid$total_time_s[1] - grid$plot_intv_s[1]) {
+  stop("eta file numbers do not map to the configured simulation period.")
+}
 
 eta_frames <- lapply(eta_paths, function(path) {
   z <- read_text_model(path, basename(path))
@@ -263,7 +278,7 @@ write_animation <- function(indices, output_file) {
 full_gif <- file.path(assets_dir, "port-fairy-full.gif")
 final_sixth_gif <- file.path(assets_dir, "port-fairy-final-sixth.gif")
 write_animation(seq_along(eta_frames), full_gif)
-final_sixth_indices <- which(eta_time >= (5 / 6) * grid$total_time_s)
+final_sixth_indices <- which(eta_time >= final_sixth_start_s)
 write_animation(final_sixth_indices, final_sixth_gif)
 
 # Maximum positive free-surface elevation at each grid cell across all saved
@@ -282,7 +297,8 @@ if (!is.finite(eta_max_limit) || eta_max_limit <= 0) eta_max_limit <- 1e-8
 grDevices::png(eta_max_file, width = 1000, height = 750, res = 125)
 tryCatch(
   plot_geographic(
-    eta_max_ll, main = "Maximum free-surface elevation across 30 minutes",
+    eta_max_ll,
+    main = sprintf("Maximum free-surface elevation across %.0f minutes", simulation_minutes),
     col = hcl.colors(40, "YlOrRd", rev = TRUE),
     range = c(0, eta_max_limit),
     show_legend = TRUE
@@ -318,7 +334,8 @@ if (!is.finite(hsig_max_limit) || hsig_max_limit <= 0) hsig_max_limit <- 1e-8
 grDevices::png(hsig_max_file, width = 1000, height = 750, res = 125)
 tryCatch(
   plot_geographic(
-    hsig_max_ll, main = "Peak simulated significant wave height across 30 minutes",
+    hsig_max_ll,
+    main = sprintf("Peak simulated significant wave height across %.0f minutes", simulation_minutes),
     col = hcl.colors(40, "YlOrRd", rev = TRUE),
     range = c(0, hsig_max_limit),
     show_legend = TRUE
@@ -330,6 +347,10 @@ if (!file.exists(hsig_max_file) || file.info(hsig_max_file)$size == 0) {
 }
 
 message("Created social assets:")
+message("Animation timing: full run 0--", sprintf("%.1f", grid$total_time_s[1]),
+        " s; saved frames 0--", sprintf("%.1f", max(eta_time)),
+        " s; final-sixth saved frames ", sprintf("%.1f", min(eta_time[final_sixth_indices])),
+        "--", sprintf("%.1f", max(eta_time[final_sixth_indices])), " s")
 message("  ", full_gif)
 message("  ", final_sixth_gif)
 message("  ", eta_max_file)
