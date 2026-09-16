@@ -18,7 +18,8 @@ animation deliberately skips the 00:00 initial condition, so it has 39 frames
 from 00:15 to 09:45. The final-one-sixth animation is configured from 08:20
 onward and therefore uses the available 08:30--09:45 snapshots.
 
-FUNWAVE is decomposed into a 2 × 2 domain and launched with four MPI ranks.
+FUNWAVE is decomposed into a 2 × 1 domain and launched with two MPI ranks,
+matching the slots exposed inside the GitHub Actions container.
 
 The DEM is resampled directly onto the complete rotated rectangle. FUNWAVE is
 given positive water depth, with land and missing DEM cells set to zero so its
@@ -147,9 +148,15 @@ all saved `eta` fields, not an estimate of individual-wave height.
 The public maps and animations use the ColorBrewer Yellow–Green–Blue palette.
 Eta products have a fixed -5 to 5 m range and peak simulated significant-wave
 height uses a fixed 0 to 4 m range. The latest-eta map has OpenStreetMap and
-satellite-imagery base layers, plus a toggleable interactive eta time series
-for five FUNWAVE stations along the buoy-to-nearshore transect ending at
+satellite-imagery base layers. A standalone interactive eta time series shows
+five FUNWAVE stations along the buoy-to-nearshore transect ending at
 142.2456520° E, 38.3789015° S.
+
+Each transect station is an integer FUNWAVE grid cell written directly to a
+native `sta_####` file every second; the report neither samples map rasters nor
+interpolates the station time series. The offshore/buoy end is dark blue and
+the nearshore end is yellow. The interactive station plot is shown as its own
+final report section.
 
 ## Interpretation limits
 

@@ -40,6 +40,7 @@ eta_limits <- c(-5, 5)
 eta_max_limits <- c(0, 5)
 hsig_limits <- c(0, 4)
 ygnbu_palette <- RColorBrewer::brewer.pal(9, "YlGnBu")
+eta_animation_palette <- grDevices::colorRampPalette(ygnbu_palette)(100)
 
 buoy_time_utc <- as.POSIXct(
   sub(" UTC$", "", forcing$time_utc[1]),
@@ -275,7 +276,7 @@ draw_eta_frame <- function(k) {
   plot_geographic(
     r_ll,
     main = sprintf("Port Fairy free-surface elevation: t = %.1f s", eta_time[k]),
-    col = ygnbu_palette, range = eta_limits, show_legend = TRUE
+    col = eta_animation_palette, range = eta_limits, show_legend = TRUE
   )
   add_wave_frame_annotation(r_ll, eta_time[k])
 }

@@ -42,7 +42,10 @@ eta_display_limits <- c(-5, 5)
 eta_max_display_limits <- c(0, 5)
 hsig_display_limits <- c(0, 4)
 ygnbu_palette <- RColorBrewer::brewer.pal(9, "YlGnBu")
-station_colours <- ygnbu_palette[c(2, 4, 6, 8, 9)]
+# Station 1 is the buoy/offshore end; use deep blue offshore and yellow at
+# the nearshore end of the transect.
+station_colours <- ygnbu_palette[c(9, 8, 6, 4, 2)]
+eta_animation_palette <- grDevices::colorRampPalette(ygnbu_palette)(100)
 
 pretty_field_name <- function(x) {
   x <- gsub("_", " ", x)
@@ -335,8 +338,7 @@ apply_water_masks_wgs84 <- function(r_ll) {
   r_ll
 }
 
-leaflet_model_map <- function(r_ll, palette, limits, legend_title,
-                              station_plot_url = NULL) {
+leaflet_model_map <- function(r_ll, palette, limits, legend_title) {
   b <- local_map_bounds(r_ll)
   pal <- colorNumeric(palette = palette, domain = limits, na.color = "transparent")
   m <- leaflet(width = "100%", height = 480,
@@ -373,19 +375,6 @@ leaflet_model_map <- function(r_ll, palette, limits, legend_title,
   )
   m <- addLegend(m, position = "bottomright", pal = pal, values = limits,
                  title = legend_title, opacity = 0.88)
-  if (!is.null(station_plot_url)) {
-    m <- addControl(
-      m,
-      html = htmltools::tags$details(
-        style = "background: rgba(255,255,255,0.94); padding: 6px; max-width: 470px;",
-        htmltools::tags$summary("Show buoy-to-nearshore eta time series"),
-        htmltools::tags$iframe(
-          src = station_plot_url, width = "450", height = "310",
-          style = "border: 0; display: block; margin-top: 6px;"
-        )
-      ), position = "topright"
-    )
-  }
   m
 }
 
@@ -491,7 +480,6 @@ station_metadata <- if (file.exists(station_metadata_path)) {
   data.frame()
 }
 station_timeseries <- data.frame()
-station_plot_url <- NULL
 if (nrow(station_metadata)) {
   station_series <- lapply(seq_len(nrow(station_metadata)), function(k) {
     path <- file.path(results_dir, sprintf("sta_%04d", k))
@@ -530,7 +518,6 @@ if (nrow(station_timeseries)) {
     station_plot, file.path(site_assets_dir, "port-fairy-transect-timeseries.html"),
     selfcontained = FALSE
   )
-  station_plot_url <- "assets/port-fairy-transect-timeseries.html"
 }
 
 # A single fixed range makes every eta frame and map comparable across days.
@@ -631,9 +618,8 @@ if (is.null(eta)) {
   eta_wgs84 <- write_model_output_rasters(eta_rotated, "eta_latest")
   eta_wgs84 <- apply_water_masks_wgs84(eta_wgs84)
   writeRaster(eta_wgs84, file.path(case_dir, "eta_latest_wgs84.tif"), overwrite = TRUE)
-  leaflet_model_map(eta_wgs84, ygnbu_palette,
-                    eta_display_limits, "Free-surface elevation (m)",
-                    station_plot_url = station_plot_url)
+  leaflet_model_map(eta_wgs84, eta_animation_palette,
+                    eta_display_limits, "Free-surface elevation (m)")
 }
 ```
 
@@ -661,7 +647,7 @@ if (!length(full_animation_indices)) {
     r_ll <- apply_water_masks_wgs84(r_ll)
     plot_geographic(r_ll,
                     main = sprintf("Free-surface elevation: t = %.1f s (WGS84)", eta_time[k]),
-                    col = ygnbu_palette,
+                    col = eta_animation_palette,
                     range = eta_animation_limits, show_legend = TRUE)
     add_wave_frame_annotation(r_ll, eta_time[k])
   }
@@ -681,7 +667,7 @@ if (!length(final_sixth_indices)) {
     r_ll <- apply_water_masks_wgs84(r_ll)
     plot_geographic(r_ll,
                     main = sprintf("Free-surface elevation: t = %.1f s (WGS84)", eta_time[k]),
-                    col = ygnbu_palette,
+                    col = eta_animation_palette,
                     range = eta_animation_limits, show_legend = TRUE)
     add_wave_frame_annotation(r_ll, eta_time[k])
   }
@@ -742,4 +728,21 @@ on the date of download.*
 
 ```{r provenance}
 report_table(transpose_summary(grid, digits = 3))
+```
+
+## Buoy-to-nearshore eta time series
+
+These are native FUNWAVE station outputs from five selected integer grid cells:
+the buoy end is dark blue and the nearshore end is yellow. They are written
+every second from the model state—there is no spatial or temporal interpolation.
+
+```{r station-timeseries, echo=FALSE}
+if (!nrow(station_timeseries)) {
+  plot.new(); text(0.5, 0.5, "No FUNWAVE station output was produced.")
+} else {
+  htmltools::tags$iframe(
+    src = "assets/port-fairy-transect-timeseries.html", width = "100%", height = "560",
+    style = "border: 1px solid #dfe6e9; display: block;"
+  )
+}
 ```
