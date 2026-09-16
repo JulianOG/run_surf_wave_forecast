@@ -370,6 +370,38 @@ if (!is.finite(delta_wk) || delta_wk <= 0) {
 source_envelope_cells <- source_envelope_width_m / dx
 source_e_fold_cells <- source_e_fold_half_width_m / dx
 
+# Five gauges follow the requested offshore-to-nearshore transect.  FUNWAVE
+# station files are one-based Mglob/Nglob grid indices, so calculate these
+# only after the final rotated grid and source-edge orientation are known.
+transect_end_ll <- c(lon = 142.2456520235717, lat = -38.37890145894907)
+station_lon <- seq(crds(buoy_ll)[1, 1], transect_end_ll["lon"], length.out = 5)
+station_lat <- seq(crds(buoy_ll)[1, 2], transect_end_ll["lat"], length.out = 5)
+station_ll <- vect(cbind(station_lon, station_lat), type = "points", crs = "EPSG:4326")
+station_om <- project(station_ll, omerc_crs)
+station_xy <- crds(station_om)
+if (source_is_low_x) {
+  station_i <- round((station_xy[, 1] - xmin(template)) / dx) + 1L
+  station_j <- round((station_xy[, 2] - ymin(template)) / dx) + 1L
+} else {
+  station_i <- round((xmax(template) - station_xy[, 1]) / dx) + 1L
+  station_j <- round((ymax(template) - station_xy[, 2]) / dx) + 1L
+}
+station_i <- pmax(1L, pmin(mglob, station_i))
+station_j <- pmax(1L, pmin(nglob, station_j))
+station_info <- data.frame(
+  station_id = sprintf("Station %d", seq_along(station_i)),
+  transect_fraction = seq(0, 1, length.out = length(station_i)),
+  lon = station_lon, lat = station_lat,
+  model_i = station_i, model_j = station_j,
+  water_depth_m = depth_funwave[cbind(station_i, station_j)]
+)
+write.table(station_info[, c("model_i", "model_j")], file.path(out_dir, "stations.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.csv(station_info, file.path(out_dir, "station_metadata.csv"), row.names = FALSE)
+if (any(!is.finite(station_info$water_depth_m) | station_info$water_depth_m <= 0)) {
+  warning("One or more requested transect stations are dry in the supplied DEM.")
+}
+
 # Warn when the recorded waves propagate away from the buoy-side source.
 if (abs(theta_peak) > 60) {
   warning(sprintf(
@@ -430,7 +462,8 @@ input <- c(
   "Cd = 0.002", "CFL = 0.5", "FroudeCap = 1.0", "MinDepth = 0.05",
   "VISCOSITY_BREAKING = T", "Cbrk1 = 0.65", "Cbrk2 = 0.35",
   "DEPTH_OUT = T", "U = T", "V = T", "ETA = T", "Hmax = T",
-  "WaveHeight = T", "MASK = T", "NumberStations = 0"
+  "WaveHeight = T", "MASK = T",
+  sprintf("NumberStations = %d", nrow(station_info)), "STATIONS_FILE = stations.txt"
 )
 writeLines(input, file.path(out_dir, "input.txt"))
 
@@ -464,6 +497,7 @@ grid_info <- data.frame(
   ymin_m = ymin(template), ymax_m = ymax(template),
   dx_m = dx, dy_m = dx, Mglob = mglob, Nglob = nglob,
   mpi_px = 2, mpi_py = 2, mpi_ranks = 4,
+  station_count = nrow(station_info),
   total_time_s = total_time, plot_intv_s = plot_intv,
   mean_wave_interval_s = mean_wave_interval, steady_time_s = steady_time,
   x_axis = "buoy-side edge to coast", y_axis = "right-handed rotated y"

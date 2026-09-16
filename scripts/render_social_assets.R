@@ -36,6 +36,10 @@ if (!is.finite(grid$dx_m[1]) || !is.finite(grid$total_time_s[1]) ||
 grid_tag <- paste0(sprintf("%.0f", grid$dx_m[1]), "m")
 simulation_minutes <- grid$total_time_s[1] / 60
 final_sixth_start_s <- (5 / 6) * grid$total_time_s[1]
+eta_limits <- c(-5, 5)
+eta_max_limits <- c(0, 5)
+hsig_limits <- c(0, 4)
+ygnbu_palette <- RColorBrewer::brewer.pal(9, "YlGnBu")
 
 buoy_time_utc <- as.POSIXct(
   sub(" UTC$", "", forcing$time_utc[1]),
@@ -262,13 +266,6 @@ eta_frames <- lapply(eta_paths, function(path) {
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
   apply_output_visibility_mask_model(z)
 })
-eta_amplitude <- max(vapply(eta_frames, function(z) {
-  value <- max(abs(z), na.rm = TRUE)
-  if (is.finite(value)) value else 0
-}, numeric(1)))
-if (!is.finite(eta_amplitude) || eta_amplitude == 0) eta_amplitude <- 1e-8
-eta_limits <- c(-eta_amplitude, eta_amplitude)
-
 draw_eta_frame <- function(k) {
   r_om <- model_to_rotated_raster(eta_frames[[k]], depth_raster, source_is_low_x,
                                   basename(eta_paths[k]))
@@ -278,7 +275,7 @@ draw_eta_frame <- function(k) {
   plot_geographic(
     r_ll,
     main = sprintf("Port Fairy free-surface elevation: t = %.1f s", eta_time[k]),
-    col = hcl.colors(40, "Blue-Red 3"), range = eta_limits, show_legend = TRUE
+    col = ygnbu_palette, range = eta_limits, show_legend = TRUE
   )
   add_wave_frame_annotation(r_ll, eta_time[k])
 }
@@ -326,15 +323,13 @@ eta_max_om <- apply_output_visibility_mask_om(eta_max_om)
 eta_max_ll <- project(eta_max_om, "EPSG:4326", method = "bilinear")
 eta_max_ll <- apply_water_masks_wgs84(eta_max_ll)
 eta_max_file <- file.path(assets_dir, "port-fairy-maximum-eta.png")
-eta_max_limit <- global(eta_max_ll, "max", na.rm = TRUE)[1, 1]
-if (!is.finite(eta_max_limit) || eta_max_limit <= 0) eta_max_limit <- 1e-8
 grDevices::png(eta_max_file, width = 1000, height = 750, res = 125)
 tryCatch(
   plot_geographic(
     eta_max_ll,
     main = sprintf("Maximum free-surface elevation across %.0f minutes", simulation_minutes),
-    col = hcl.colors(40, "YlOrRd", rev = TRUE),
-    range = c(0, eta_max_limit),
+    col = ygnbu_palette,
+    range = eta_max_limits,
     show_legend = TRUE
   ),
   finally = grDevices::dev.off()
@@ -363,15 +358,13 @@ hsig_max_om <- apply_output_visibility_mask_om(hsig_max_om)
 hsig_max_ll <- project(hsig_max_om, "EPSG:4326", method = "bilinear")
 hsig_max_ll <- apply_water_masks_wgs84(hsig_max_ll)
 hsig_max_file <- file.path(assets_dir, "port-fairy-maximum-hsig.png")
-hsig_max_limit <- global(hsig_max_ll, "max", na.rm = TRUE)[1, 1]
-if (!is.finite(hsig_max_limit) || hsig_max_limit <= 0) hsig_max_limit <- 1e-8
 grDevices::png(hsig_max_file, width = 1000, height = 750, res = 125)
 tryCatch(
   plot_geographic(
     hsig_max_ll,
     main = sprintf("Peak simulated significant wave height across %.0f minutes", simulation_minutes),
-    col = hcl.colors(40, "YlOrRd", rev = TRUE),
-    range = c(0, hsig_max_limit),
+    col = ygnbu_palette,
+    range = hsig_limits,
     show_legend = TRUE
   ),
   finally = grDevices::dev.off()

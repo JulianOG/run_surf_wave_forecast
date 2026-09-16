@@ -5,6 +5,8 @@ diagnostic. It turns the latest usable offshore buoy observation and a local
 digital elevation model into a 5 m FUNWAVE-TVD simulation and supporting
 geospatial diagnostics.
 
+The published report is at <https://julianog.github.io/run_surf_wave_forecast/>.
+
 ## Domain and grid
 
 The model domain is a rectangular local Oblique Mercator grid spanning the
@@ -141,6 +143,13 @@ wavemaker to `NA`; this is a display mask and does not change the simulation.
 Interactive maps are restricted to the local model extent and shown at a
 compact height. The maximum-elevation diagnostic is the cellwise maximum of
 all saved `eta` fields, not an estimate of individual-wave height.
+
+The public maps and animations use the ColorBrewer Yellow–Green–Blue palette.
+Eta products have a fixed -5 to 5 m range and peak simulated significant-wave
+height uses a fixed 0 to 4 m range. The latest-eta map has OpenStreetMap and
+satellite-imagery base layers, plus a toggleable interactive eta time series
+for five FUNWAVE stations along the buoy-to-nearshore transect ending at
+142.2456520° E, 38.3789015° S.
 
 ## Interpretation limits
 

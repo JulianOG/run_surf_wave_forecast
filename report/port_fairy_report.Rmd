@@ -38,6 +38,11 @@ elapsed_clock <- function(elapsed_s) {
 simulation_label <- paste0(sprintf("%.0f", simulation_minutes), "-minute")
 final_sixth_start_label <- elapsed_clock(final_sixth_start_s)
 simulation_end_label <- elapsed_clock(grid$total_time_s[1])
+eta_display_limits <- c(-5, 5)
+eta_max_display_limits <- c(0, 5)
+hsig_display_limits <- c(0, 4)
+ygnbu_palette <- RColorBrewer::brewer.pal(9, "YlGnBu")
+station_colours <- ygnbu_palette[c(2, 4, 6, 8, 9)]
 
 pretty_field_name <- function(x) {
   x <- gsub("_", " ", x)
@@ -330,15 +335,16 @@ apply_water_masks_wgs84 <- function(r_ll) {
   r_ll
 }
 
-leaflet_model_map <- function(r_ll, palette, limits, legend_title) {
+leaflet_model_map <- function(r_ll, palette, limits, legend_title,
+                              station_plot_url = NULL) {
   b <- local_map_bounds(r_ll)
   pal <- colorNumeric(palette = palette, domain = limits, na.color = "transparent")
   m <- leaflet(width = "100%", height = 480,
                options = leafletOptions(minZoom = 14, maxZoom = 18,
                                         maxBoundsViscosity = 1))
-  # CARTO's public tile endpoint now returns an API-key warning in the report.
-  # Use standard OpenStreetMap tiles instead; they require no project key.
+  # These public sources require no project key.
   m <- addProviderTiles(m, "OpenStreetMap.Mapnik", group = "OpenStreetMap")
+  m <- addProviderTiles(m, "Esri.WorldImagery", group = "Satellite imagery")
   m <- setMaxBounds(m, b[["west"]], b[["south"]], b[["east"]], b[["north"]])
   m <- fitBounds(m, b[["west"]], b[["south"]], b[["east"]], b[["north"]])
   m <- addRasterImage(m, r_ll, colors = pal, opacity = 0.88, project = FALSE,
@@ -351,14 +357,36 @@ leaflet_model_map <- function(r_ll, palette, limits, legend_title) {
   m <- addCircleMarkers(m, lng = crds(buoy_ll)[1, 1], lat = crds(buoy_ll)[1, 2],
                         radius = 5, color = "red", fillOpacity = 1,
                         label = "Port Fairy wave buoy", group = "Buoy")
+  if (exists("station_metadata", inherits = TRUE) && nrow(station_metadata)) {
+    m <- addCircleMarkers(
+      m, lng = station_metadata$lon, lat = station_metadata$lat,
+      radius = 4, color = station_colours[seq_len(nrow(station_metadata))],
+      fillOpacity = 1, label = station_metadata$station_id,
+      group = "Transect stations"
+    )
+  }
   m <- addLayersControl(
     m,
-    baseGroups = "OpenStreetMap",
-    overlayGroups = c("Model output", "FUNWAVE grid", "Internal wavemaker", "Buoy"),
+    baseGroups = c("OpenStreetMap", "Satellite imagery"),
+    overlayGroups = c("Model output", "FUNWAVE grid", "Internal wavemaker", "Buoy", "Transect stations"),
     options = layersControlOptions(collapsed = FALSE)
   )
-  addLegend(m, position = "bottomright", pal = pal, values = limits,
-            title = legend_title, opacity = 0.88)
+  m <- addLegend(m, position = "bottomright", pal = pal, values = limits,
+                 title = legend_title, opacity = 0.88)
+  if (!is.null(station_plot_url)) {
+    m <- addControl(
+      m,
+      html = htmltools::tags$details(
+        style = "background: rgba(255,255,255,0.94); padding: 6px; max-width: 470px;",
+        htmltools::tags$summary("Show buoy-to-nearshore eta time series"),
+        htmltools::tags$iframe(
+          src = station_plot_url, width = "450", height = "310",
+          style = "border: 0; display: block; margin-top: 6px;"
+        )
+      ), position = "topright"
+    )
+  }
+  m
 }
 
 frame_local_time <- function(elapsed_s) {
@@ -453,14 +481,60 @@ hsig_max <- if (length(hsig_frames)) {
   NULL
 }
 if (!is.null(hsig_max)) hsig_max[!is.finite(hsig_max)] <- NA_real_
-eta_amplitude <- if (length(eta_frames)) max(vapply(eta_frames, function(z) {
-  value <- max(abs(z), na.rm = TRUE)
-  if (is.finite(value)) value else 0
-}, numeric(1))) else 0
-if (!is.finite(eta_amplitude) || eta_amplitude == 0) eta_amplitude <- 1e-8
-# One common scale is deliberately used for both GIFs and every frame. The
-# final static eta map uses it too, so amplitudes are comparable at a glance.
-eta_animation_limits <- c(-eta_amplitude, eta_amplitude)
+
+# Read the five FUNWAVE station files.  Each file is time, eta, u, v and the
+# position metadata was created with stations.txt by the case setup script.
+station_metadata_path <- file.path(case_dir, "station_metadata.csv")
+station_metadata <- if (file.exists(station_metadata_path)) {
+  read.csv(station_metadata_path, check.names = FALSE)
+} else {
+  data.frame()
+}
+station_timeseries <- data.frame()
+station_plot_url <- NULL
+if (nrow(station_metadata)) {
+  station_series <- lapply(seq_len(nrow(station_metadata)), function(k) {
+    path <- file.path(results_dir, sprintf("sta_%04d", k))
+    if (!file.exists(path)) return(NULL)
+    z <- utils::read.table(path, header = FALSE)
+    if (ncol(z) < 2) return(NULL)
+    names(z)[seq_len(min(4, ncol(z)))] <- c("time_s", "eta_m", "u_m_s", "v_m_s")[seq_len(min(4, ncol(z)))]
+    z$station_id <- station_metadata$station_id[k]
+    z
+  })
+  station_series <- Filter(Negate(is.null), station_series)
+  if (length(station_series)) station_timeseries <- do.call(rbind, station_series)
+}
+if (nrow(station_timeseries)) {
+  station_plot <- plotly::plot_ly()
+  for (k in seq_len(nrow(station_metadata))) {
+    station_name <- station_metadata$station_id[k]
+    z <- station_timeseries[station_timeseries$station_id == station_name, , drop = FALSE]
+    if (nrow(z)) {
+      station_plot <- plotly::add_lines(
+        station_plot, data = z, x = ~time_s, y = ~eta_m, name = station_name,
+        line = list(color = station_colours[k], width = 2),
+        hovertemplate = paste0(station_name, "<br>t = %{x:.1f} s<br>eta = %{y:.3f} m<extra></extra>")
+      )
+    }
+  }
+  station_plot <- plotly::layout(
+    station_plot, title = "FUNWAVE eta along buoy-to-nearshore transect",
+    xaxis = list(title = "Model elapsed time (s)"),
+    yaxis = list(title = "Free-surface elevation, eta (m)", range = eta_display_limits),
+    legend = list(orientation = "h")
+  )
+  site_assets_dir <- normalizePath("../site/assets", mustWork = FALSE)
+  dir.create(site_assets_dir, recursive = TRUE, showWarnings = FALSE)
+  htmlwidgets::saveWidget(
+    station_plot, file.path(site_assets_dir, "port-fairy-transect-timeseries.html"),
+    selfcontained = FALSE
+  )
+  station_plot_url <- "assets/port-fairy-transect-timeseries.html"
+}
+
+# A single fixed range makes every eta frame and map comparable across days.
+eta_animation_limits <- eta_display_limits
 
 # Both animations are conventional six-second looping GIFs. Their frame
 # intervals adapt to the number of saved outputs.
@@ -513,6 +587,9 @@ internal wavemaker, then reprojected to WGS84
 for geographic plotting. The interactive maps are limited to the local model
 extent and use a compact display height.
 
+Live report: <https://julianog.github.io/run_surf_wave_forecast/>. Source:
+<https://github.com/JulianOG/run_surf_wave_forecast>.
+
 ```{r forcing-status}
 direction_status <- if (forcing$inward_source_component > 0) {
   "The wave vector has an inward component from the selected source edge."
@@ -554,8 +631,9 @@ if (is.null(eta)) {
   eta_wgs84 <- write_model_output_rasters(eta_rotated, "eta_latest")
   eta_wgs84 <- apply_water_masks_wgs84(eta_wgs84)
   writeRaster(eta_wgs84, file.path(case_dir, "eta_latest_wgs84.tif"), overwrite = TRUE)
-  leaflet_model_map(eta_wgs84, hcl.colors(40, "Blue-Red 3"),
-                    eta_animation_limits, "Free-surface elevation (m)")
+  leaflet_model_map(eta_wgs84, ygnbu_palette,
+                    eta_display_limits, "Free-surface elevation (m)",
+                    station_plot_url = station_plot_url)
 }
 ```
 
@@ -583,7 +661,7 @@ if (!length(full_animation_indices)) {
     r_ll <- apply_water_masks_wgs84(r_ll)
     plot_geographic(r_ll,
                     main = sprintf("Free-surface elevation: t = %.1f s (WGS84)", eta_time[k]),
-                    col = hcl.colors(40, "Blue-Red 3"),
+                    col = ygnbu_palette,
                     range = eta_animation_limits, show_legend = TRUE)
     add_wave_frame_annotation(r_ll, eta_time[k])
   }
@@ -603,7 +681,7 @@ if (!length(final_sixth_indices)) {
     r_ll <- apply_water_masks_wgs84(r_ll)
     plot_geographic(r_ll,
                     main = sprintf("Free-surface elevation: t = %.1f s (WGS84)", eta_time[k]),
-                    col = hcl.colors(40, "Blue-Red 3"),
+                    col = ygnbu_palette,
                     range = eta_animation_limits, show_legend = TRUE)
     add_wave_frame_annotation(r_ll, eta_time[k])
   }
@@ -623,8 +701,8 @@ if (is.null(eta_max)) {
   eta_max_wgs84 <- write_model_output_rasters(eta_max_rotated, "eta_max")
   eta_max_wgs84 <- apply_water_masks_wgs84(eta_max_wgs84)
   writeRaster(eta_max_wgs84, file.path(case_dir, "eta_max_wgs84.tif"), overwrite = TRUE)
-  leaflet_model_map(eta_max_wgs84, hcl.colors(40, "YlOrRd", rev = TRUE),
-                    positive_limits(eta_max), "Maximum free-surface elevation (m)")
+  leaflet_model_map(eta_max_wgs84, ygnbu_palette,
+                    eta_max_display_limits, "Maximum free-surface elevation (m)")
 }
 ```
 
@@ -642,8 +720,8 @@ if (is.null(hsig_max)) {
   hsig_max_wgs84 <- write_model_output_rasters(hsig_max_rotated, "hsig_max")
   hsig_max_wgs84 <- apply_water_masks_wgs84(hsig_max_wgs84)
   writeRaster(hsig_max_wgs84, file.path(case_dir, "hsig_max_wgs84.tif"), overwrite = TRUE)
-  leaflet_model_map(hsig_max_wgs84, hcl.colors(40, "YlOrRd", rev = TRUE),
-                    positive_limits(hsig_max), "Peak simulated significant wave height (m)")
+  leaflet_model_map(hsig_max_wgs84, ygnbu_palette,
+                    hsig_display_limits, "Peak simulated significant wave height (m)")
 }
 ```
 
