@@ -137,9 +137,10 @@ jobs:
         run: |
           docker run --rm \
             --user root \
+            --cpus=4 \
             -v "$PWD/port_fairy/output:/work" \
             "${{ needs.ensure-image.outputs.image }}" \
-            -lc 'mkdir -p results && mpirun --allow-run-as-root -np 4 funwave input.txt'
+            -lc 'mkdir -p results && echo "Container CPUs: $(nproc)" && mpirun --allow-run-as-root --oversubscribe --bind-to none -np 4 funwave input.txt'
 
       - name: Render Port Fairy and compact-test HTML pages
         run: |
