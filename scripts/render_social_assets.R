@@ -123,6 +123,31 @@ apply_dem_water_mask_om <- function(r_om) {
   r_om
 }
 
+# The buoy-side side of the internal wavemaker is not a coastal forecast
+# product. Mask it before projection and re-apply a nearest-neighbour version
+# after projection so bilinear interpolation cannot bleed values across it.
+shoreward_of_paddle_model <- outer(
+  (seq_len(grid$Mglob[1]) - 1) * grid$dx_m[1], seq_len(grid$Nglob[1]),
+  function(x, y) x >= grid$x_wk_m[1]
+)
+shoreward_of_paddle_om <- model_to_rotated_raster(
+  ifelse(shoreward_of_paddle_model, 1, 0), depth_raster, source_is_low_x,
+  "shoreward-of-wavemaker mask"
+)
+shoreward_of_paddle_wgs84 <- project(shoreward_of_paddle_om, "EPSG:4326", method = "near")
+
+apply_output_visibility_mask_model <- function(z) {
+  z <- apply_dem_water_mask_model(z)
+  z[!shoreward_of_paddle_model] <- NA_real_
+  z
+}
+
+apply_output_visibility_mask_om <- function(r_om) {
+  r_om <- apply_dem_water_mask_om(r_om)
+  r_om[is.na(shoreward_of_paddle_om) | shoreward_of_paddle_om <= 0] <- NA_real_
+  r_om
+}
+
 buoy_ll <- vect(matrix(c(forcing$buoy_lon, forcing$buoy_lat), ncol = 2),
                 type = "points", crs = "EPSG:4326")
 model_outline_ll_xy <- crds(project(outline_from_raster(depth_raster), "EPSG:4326"))
@@ -203,6 +228,12 @@ apply_water_masks_wgs84 <- function(r_ll) {
   }
   r_ll[is.na(dem_mask) | dem_mask <= 0] <- NA_real_
 
+  paddle_mask <- shoreward_of_paddle_wgs84
+  if (!compareGeom(paddle_mask, r_ll, stopOnError = FALSE)) {
+    paddle_mask <- resample(paddle_mask, r_ll, method = "near")
+  }
+  r_ll[is.na(paddle_mask) | paddle_mask <= 0] <- NA_real_
+
   if (is.null(mask_wgs84)) return(r_ll)
   wet_mask <- mask_wgs84
   if (!compareGeom(wet_mask, r_ll, stopOnError = FALSE)) {
@@ -229,7 +260,7 @@ if (any(!is.finite(eta_time)) || any(eta_time < 0) ||
 eta_frames <- lapply(eta_paths, function(path) {
   z <- read_text_model(path, basename(path))
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
-  apply_dem_water_mask_model(z)
+  apply_output_visibility_mask_model(z)
 })
 eta_amplitude <- max(vapply(eta_frames, function(z) {
   value <- max(abs(z), na.rm = TRUE)
@@ -241,7 +272,7 @@ eta_limits <- c(-eta_amplitude, eta_amplitude)
 draw_eta_frame <- function(k) {
   r_om <- model_to_rotated_raster(eta_frames[[k]], depth_raster, source_is_low_x,
                                   basename(eta_paths[k]))
-  r_om <- apply_dem_water_mask_om(r_om)
+  r_om <- apply_output_visibility_mask_om(r_om)
   r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
   r_ll <- apply_water_masks_wgs84(r_ll)
   plot_geographic(
@@ -291,7 +322,7 @@ eta_max[!is.finite(eta_max)] <- NA_real_
 
 eta_max_om <- model_to_rotated_raster(eta_max, depth_raster, source_is_low_x,
                                       "maximum free-surface elevation")
-eta_max_om <- apply_dem_water_mask_om(eta_max_om)
+eta_max_om <- apply_output_visibility_mask_om(eta_max_om)
 eta_max_ll <- project(eta_max_om, "EPSG:4326", method = "bilinear")
 eta_max_ll <- apply_water_masks_wgs84(eta_max_ll)
 eta_max_file <- file.path(assets_dir, "port-fairy-maximum-eta.png")
@@ -323,12 +354,12 @@ hsig_paths <- hsig_paths[order(hsig_number)]
 hsig_frames <- lapply(hsig_paths, function(path) {
   z <- read_text_model(path, basename(path))
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
-  apply_dem_water_mask_model(z)
+  apply_output_visibility_mask_model(z)
 })
 hsig_max <- maximum_model_field(hsig_frames)
 hsig_max_om <- model_to_rotated_raster(hsig_max, depth_raster, source_is_low_x,
                                        "peak simulated significant wave height")
-hsig_max_om <- apply_dem_water_mask_om(hsig_max_om)
+hsig_max_om <- apply_output_visibility_mask_om(hsig_max_om)
 hsig_max_ll <- project(hsig_max_om, "EPSG:4326", method = "bilinear")
 hsig_max_ll <- apply_water_masks_wgs84(hsig_max_ll)
 hsig_max_file <- file.path(assets_dir, "port-fairy-maximum-hsig.png")

@@ -16,6 +16,8 @@ animation deliberately skips the 00:00 initial condition, so it has 39 frames
 from 00:15 to 09:45. The final-one-sixth animation is configured from 08:20
 onward and therefore uses the available 08:30--09:45 snapshots.
 
+FUNWAVE is decomposed into a 2 × 2 domain and launched with four MPI ranks.
+
 The DEM is resampled directly onto the complete rotated rectangle. FUNWAVE is
 given positive water depth, with land and missing DEM cells set to zero so its
 wet/dry treatment can keep them dry.
@@ -56,14 +58,15 @@ is flagged because it requires careful interpretation.
 
 `Delta_WK` is dimensionless: it scales with the daily peak wavelength rather
 than being a distance in metres. This case fixes the *physical* active Gaussian
-envelope at 100 m, measured from -2 to +2 e-folds (twenty 5 m grid cells). The
+envelope at 50 m, measured from -2 to +2 e-folds (ten 5 m grid cells). The
 script derives the daily `Delta_WK` from the peak wavelength at the actual
-source depth. For a 200--300 m peak wavelength it is about 0.75--1.12.
+source depth. For a 200--300 m peak wavelength it is about 0.37--0.56.
 
-The corresponding FUNWAVE `Width_WK` is 111.8 m and the paddle centre is
-271.8 m from the source edge: 100 m source-side sponge, 60 m clear gap, then
-the 111.8 m FUNWAVE width. This keeps the source outside the damping zone but
-does not increase the buoy-derived `Hmo`. Source width is therefore not a
+The corresponding FUNWAVE `Width_WK` is 55.9 m and the paddle centre is
+215.9 m from the source edge: 100 m source-side sponge, 60 m clear gap, then
+the 55.9 m FUNWAVE width. This moves the narrower paddle 55.9 m seaward while
+keeping the source outside the damping zone. It does not increase the
+buoy-derived `Hmo`. Source width is therefore not a
 substitute for calibration or a finer surf-zone grid.
 
 The Norfolk and Saco cases are useful published configurations, but are not
@@ -74,8 +77,8 @@ uses `WK_NEW_IRR` rather than `WK_IRR`.
 | --- | --- | --- | --- |
 | Grid spacing | 5 m | 1.5 m | 2 m |
 | Wavemaker | `WK_IRR` | `WK_IRR` | `WK_NEW_IRR` |
-| `Delta_WK` | Derived daily; typically 0.75–1.12 | 2.0 | 2.0 |
-| Active source envelope | 100 m (20 cells) | About 67 m (45 cells) | About 162 m (81 cells) |
+| `Delta_WK` | Derived daily; typically 0.37–0.56 | 2.0 | 2.0 |
+| Active source envelope | 50 m (10 cells) | About 67 m (45 cells) | About 162 m (81 cells) |
 | `CFL` | 0.5 | 0.15 | 0.05 |
 | Bottom drag `Cd` | 0.002 | 0.002 | 0.002 |
 | `VISCOSITY_BREAKING` | `T` | `T` | `F` |
@@ -91,8 +94,8 @@ for further cases and implementation details.
 
 ## Propagation and controlled sensitivities
 
-Restoring the 100 m source envelope is a baseline change only. If widening the
-paddle did not improve coastward waves, source width is not the dominant loss
+Halving the paddle is a controlled source-geometry change only. If widening or
+narrowing the paddle does not improve coastward waves, source width is not the dominant loss
 mechanism. Test one of the following at a time against the same buoy record,
 and compare a cross-shore transect of `eta` or `Hrms` before choosing a daily
 configuration.
@@ -133,6 +136,8 @@ coastward wave field.
 are written to `output/results/`. The report reads these fields, applies both
 the DEM-derived water mask and the FUNWAVE wet/dry mask before geographic
 reprojection, and reapplies nearest-neighbour versions of those masks in WGS84.
+For public wave products it also sets all cells seaward of the internal
+wavemaker to `NA`; this is a display mask and does not change the simulation.
 Interactive maps are restricted to the local model extent and shown at a
 compact height. The maximum-elevation diagnostic is the cellwise maximum of
 all saved `eta` fields, not an estimate of individual-wave height.

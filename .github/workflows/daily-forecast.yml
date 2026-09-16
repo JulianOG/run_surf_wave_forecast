@@ -139,7 +139,7 @@ jobs:
             --user root \
             -v "$PWD/port_fairy/output:/work" \
             "${{ needs.ensure-image.outputs.image }}" \
-            -lc 'mkdir -p results && mpirun --allow-run-as-root -np 2 funwave input.txt'
+            -lc 'mkdir -p results && mpirun --allow-run-as-root -np 4 funwave input.txt'
 
       - name: Render Port Fairy and compact-test HTML pages
         run: |

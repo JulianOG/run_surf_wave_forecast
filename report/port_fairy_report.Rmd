@@ -39,6 +39,37 @@ simulation_label <- paste0(sprintf("%.0f", simulation_minutes), "-minute")
 final_sixth_start_label <- elapsed_clock(final_sixth_start_s)
 simulation_end_label <- elapsed_clock(grid$total_time_s[1])
 
+pretty_field_name <- function(x) {
+  x <- gsub("_", " ", x)
+  x <- tools::toTitleCase(x)
+  x <- gsub("\\bFunwave\\b", "FUNWAVE", x)
+  x <- gsub("\\bHs\\b", "Hs", x)
+  x <- gsub("\\bTp\\b", "Tp", x)
+  x <- gsub("\\bMglob\\b", "Mglob", x)
+  x <- gsub("\\bNglob\\b", "Nglob", x)
+  x <- gsub("\\bDx\\b", "DX", x)
+  x <- gsub("\\bDy\\b", "DY", x)
+  x <- gsub("\\bWk\\b", "WK", x)
+  x
+}
+
+transpose_summary <- function(x, digits = 2) {
+  x <- as.data.frame(x, check.names = FALSE, stringsAsFactors = FALSE)
+  if (nrow(x) != 1) stop("transpose_summary() expects a one-row data frame.")
+  data.frame(
+    Item = pretty_field_name(names(x)),
+    Value = vapply(x[1, ], function(value) {
+      if (is.numeric(value)) format(value, digits = digits, trim = TRUE, scientific = FALSE) else as.character(value)
+    }, character(1)),
+    check.names = FALSE
+  )
+}
+
+report_table <- function(x, digits = 2) {
+  knitr::kable(x, format = "html", digits = digits, escape = TRUE,
+               table.attr = 'class="pf-report-table"')
+}
+
 # The buoys report UTC. Show the animation using Port Fairy's local civil time
 # while retaining the model's elapsed time from that observation.
 port_fairy_tz <- "Australia/Melbourne"
@@ -142,7 +173,7 @@ write_model_output_rasters <- function(r_om, stem, method = "bilinear") {
   # Keep water-level products on cells that are water in the DEM before any
   # geographic reprojection. A second nearest-neighbour mask is applied after
   # projection to keep interpolation from bleeding values onto land pixels.
-  r_om <- apply_dem_water_mask_rotated(r_om)
+  r_om <- apply_output_visibility_mask_rotated(r_om)
   writeRaster(r_om, file.path(case_dir, paste0(stem, "_rotated_omerc.tif")),
               overwrite = TRUE)
   r_ll <- project(r_om, "EPSG:4326", method = method)
@@ -188,6 +219,30 @@ apply_dem_water_mask_model <- function(z) {
 
 apply_dem_water_mask_rotated <- function(r_om) {
   r_om[is.na(dem_water_mask_rotated) | dem_water_mask_rotated <= 0] <- NA_real_
+  r_om
+}
+
+# The internal wavemaker emits energy in both directions. The buoy-side side
+# is intentionally hidden from coastal forecast products before projection and
+# again afterwards, preventing interpolation from bleeding across the paddle.
+shoreward_of_paddle_model <- outer(
+  (seq_len(grid$Mglob[1]) - 1) * grid$dx_m[1], seq_len(grid$Nglob[1]),
+  function(x, y) x >= grid$x_wk_m[1]
+)
+shoreward_of_paddle_rotated <- model_to_rotated_raster(
+  ifelse(shoreward_of_paddle_model, 1, 0), "shoreward-of-wavemaker mask"
+)
+shoreward_of_paddle_wgs84 <- project(shoreward_of_paddle_rotated, "EPSG:4326", method = "near")
+
+apply_output_visibility_mask_model <- function(z) {
+  z <- apply_dem_water_mask_model(z)
+  z[!shoreward_of_paddle_model] <- NA_real_
+  z
+}
+
+apply_output_visibility_mask_rotated <- function(r_om) {
+  r_om <- apply_dem_water_mask_rotated(r_om)
+  r_om[is.na(shoreward_of_paddle_rotated) | shoreward_of_paddle_rotated <= 0] <- NA_real_
   r_om
 }
 
@@ -259,6 +314,12 @@ apply_water_masks_wgs84 <- function(r_ll) {
     dem_mask <- resample(dem_mask, r_ll, method = "near")
   }
   r_ll[is.na(dem_mask) | dem_mask <= 0] <- NA_real_
+
+  paddle_mask <- shoreward_of_paddle_wgs84
+  if (!compareGeom(paddle_mask, r_ll, stopOnError = FALSE)) {
+    paddle_mask <- resample(paddle_mask, r_ll, method = "near")
+  }
+  r_ll[is.na(paddle_mask) | paddle_mask <= 0] <- NA_real_
 
   if (is.null(mask_wgs84)) return(r_ll)
   wet_mask <- mask_wgs84
@@ -365,7 +426,7 @@ if (length(eta_paths) &&
 eta_frames <- lapply(eta_paths, function(path) {
   z <- read_text_model(path, basename(path))
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
-  apply_dem_water_mask_model(z)
+  apply_output_visibility_mask_model(z)
 })
 eta_max <- if (length(eta_frames)) {
   do.call(pmax, c(eta_frames, na.rm = TRUE))
@@ -384,7 +445,7 @@ hsig_paths <- hsig_paths[order(hsig_number)]
 hsig_frames <- lapply(hsig_paths, function(path) {
   z <- read_text_model(path, basename(path))
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
-  apply_dem_water_mask_model(z)
+  apply_output_visibility_mask_model(z)
 })
 hsig_max <- if (length(hsig_frames)) {
   do.call(pmax, c(hsig_frames, na.rm = TRUE))
@@ -430,7 +491,16 @@ final_sixth_saved_end_label <- if (length(final_sixth_indices)) {
 } else {
   "n/a"
 }
-depth_out <- read_static_model("dep.out")
+```
+
+```{r report-table-style, results='asis', echo=FALSE}
+cat('<style>
+.pf-report-table { width: 100%; margin: 0.8rem 0 1.5rem; border-collapse: collapse; font-size: 0.93rem; }
+.pf-report-table th { background: #2c3e50; color: #fff; text-align: left; padding: 0.55rem 0.7rem; }
+.pf-report-table td { padding: 0.45rem 0.7rem; border-bottom: 1px solid #dfe6e9; vertical-align: top; }
+.pf-report-table td:first-child { width: 34%; color: #2c3e50; font-weight: 600; }
+.pf-report-table tbody tr:nth-child(even) { background: #f6f8fa; }
+</style>')
 ```
 
 ## Interpretation first
@@ -438,7 +508,8 @@ depth_out <- read_static_model("dep.out")
 This is a `r sprintf("%.0f m", grid$dx_m[1])`, `r simulation_label` grid and
 forcing diagnostic—not a validated harbour
 forecast. Each raw FUNWAVE text field is first rebuilt on the exact rotated
-Oblique Mercator grid, DEM-masked to water cells, then reprojected to WGS84
+Oblique Mercator grid, DEM-masked to water cells, and masked seaward of the
+internal wavemaker, then reprojected to WGS84
 for geographic plotting. The interactive maps are limited to the local model
 extent and use a compact display height.
 
@@ -448,7 +519,7 @@ direction_status <- if (forcing$inward_source_component > 0) {
 } else {
   "Warning: the wave vector points out of the selected source edge. Do not interpret this run as a coastal-wave prediction."
 }
-knitr::kable(data.frame(
+report_table(transpose_summary(data.frame(
   source_edge = grid$source_edge,
   boundary_direction_statistic = forcing$boundary_direction_statistic,
   requested_model_x_bearing_deg_true = forcing$requested_model_x_bearing_deg_true,
@@ -456,7 +527,7 @@ knitr::kable(data.frame(
   funwave_theta_peak_deg = forcing$funwave_theta_peak_deg,
   inward_source_component = forcing$inward_source_component,
   interpretation = direction_status
-), digits = 2)
+), digits = 2))
 ```
 
 ## Latest buoy forcing
@@ -468,80 +539,7 @@ back to the peak values only when the mean values are unavailable. The buoy
 provides integral Hs and period parameters—not a phase-resolved spectrum.
 
 ```{r forcing}
-knitr::kable(forcing, digits = 2)
-```
-
-## Input bathymetry and depth-file checks
-
-The black outline shows the rectangular FUNWAVE grid. All three maps below are
-displayed in WGS84 only after the native rotated grid has been reconstructed.
-
-```{r input-bathy, fig.width=15, fig.height=5}
-par(mfrow = c(1, 3), mar = c(4, 4, 3, 4))
-plot_geographic(elevation_wgs84,
-                main = paste0("Warped ", grid_tag, " elevation input (WGS84)"),
-                col = hcl.colors(45, "Terrain", rev = TRUE), show_legend = TRUE)
-plot_geographic(depth_file_wgs84, main = "FUNWAVE depth.txt reconstructed (WGS84)",
-                col = hcl.colors(45, "YlGnBu", rev = TRUE))
-plot_geographic(depth_delta_wgs84, main = "depth.txt minus warped raster (WGS84)",
-                col = hcl.colors(41, "Blue-Red 3"),
-                range = symmetric_raster_limits(depth_delta_wgs84))
-```
-
-```{r bathy-check-table}
-knitr::kable(data.frame(
-  check = c("FUNWAVE depth-file dimensions", "maximum |depth.txt - warped raster|", "wet cells in depth.txt"),
-  value = c(
-    sprintf("%.0f x %.0f; expected Mglob x Nglob = %.0f x %.0f", nrow(depth_from_file),
-            ncol(depth_from_file), grid$Mglob, grid$Nglob),
-    sprintf("%.8f m", max_depth_file_delta),
-    sprintf("%.1f%%", 100 * mean(depth_from_file > 0))
-  )
-))
-```
-
-## Source orientation diagnostic
-
-The dashed line is the internal wavemaker location. The red arrow is the
-selected buoy wave-travel direction (mean when available; peak fallback) after
-conversion from the buoy's reported **from** direction into the actual rotated
-model axes. The grid is rebuilt daily so model +x is aligned to that travel
-direction. This avoids losing most of an oblique sea state into a lateral
-sponge; it does not artificially amplify the imposed wave height.
-
-```{r forcing-geometry}
-theta <- forcing$funwave_theta_peak_deg * pi / 180
-a <- plot_model(depth_from_file, "Wavemaker and transformed buoy direction",
-                hcl.colors(45, "YlGnBu", rev = TRUE))
-abline(v = grid$x_wk_m, lwd = 3, lty = 2)
-arrow_length <- min(max(a$x), max(a$y)) * 0.22
-x0 <- max(grid$x_wk_m + arrow_length * 0.7, arrow_length)
-y0 <- mean(a$y)
-arrows(x0, y0, x0 + arrow_length * cos(theta), y0 + arrow_length * sin(theta),
-       lwd = 3, col = "red", length = 0.12)
-text(x0, y0, sprintf("ThetaPeak = %.1f°", forcing$funwave_theta_peak_deg),
-     pos = 3, col = "red")
-```
-
-## FUNWAVE depth read-back
-
-`DEPTH_OUT = T` asks FUNWAVE to write the depth it read. The difference panel
-is the direct end-to-end check; values near zero confirm that the model did not
-transpose or flip the supplied bathymetry.
-
-```{r depth-readback, fig.width=15, fig.height=5}
-if (is.null(depth_out)) {
-  plot.new(); text(0.5, 0.5, "No dep.out file was found in this run.")
-} else {
-  depth_out_minus_input <- depth_out - depth_from_file
-  par(mfrow = c(1, 3), mar = c(4, 4, 3, 4))
-  plot_model(depth_from_file, "depth.txt supplied to FUNWAVE",
-             hcl.colors(45, "YlGnBu", rev = TRUE))
-  plot_model(depth_out, "dep.out read back from FUNWAVE",
-             hcl.colors(45, "YlGnBu", rev = TRUE))
-  plot_model(depth_out_minus_input, "dep.out minus depth.txt",
-             hcl.colors(41, "Blue-Red 3"), zlim = symmetric_limits(depth_out_minus_input))
-}
+report_table(transpose_summary(forcing, digits = 2))
 ```
 
 ## Latest free-surface elevation
@@ -550,7 +548,7 @@ if (is.null(depth_out)) {
 if (is.null(eta)) {
   plot.new(); text(0.5, 0.5, "No eta output was produced.")
 } else {
-  eta_plot <- apply_dem_water_mask_model(eta)
+  eta_plot <- apply_output_visibility_mask_model(eta)
   if (!is.null(mask)) eta_plot[mask <= 0] <- NA_real_
   eta_rotated <- model_to_rotated_raster(eta_plot, "eta")
   eta_wgs84 <- write_model_output_rasters(eta_rotated, "eta_latest")
@@ -580,7 +578,7 @@ if (!length(full_animation_indices)) {
 } else {
   for (k in full_animation_indices) {
     r_om <- model_to_rotated_raster(eta_frames[[k]], basename(eta_paths[k]))
-    r_om <- apply_dem_water_mask_rotated(r_om)
+    r_om <- apply_output_visibility_mask_rotated(r_om)
     r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
     r_ll <- apply_water_masks_wgs84(r_ll)
     plot_geographic(r_ll,
@@ -600,7 +598,7 @@ if (!length(final_sixth_indices)) {
 } else {
   for (k in final_sixth_indices) {
     r_om <- model_to_rotated_raster(eta_frames[[k]], basename(eta_paths[k]))
-    r_om <- apply_dem_water_mask_rotated(r_om)
+    r_om <- apply_output_visibility_mask_rotated(r_om)
     r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
     r_ll <- apply_water_masks_wgs84(r_ll)
     plot_geographic(r_ll,
@@ -665,5 +663,5 @@ on the date of download.*
 ## Provenance
 
 ```{r provenance}
-knitr::kable(grid)
+report_table(transpose_summary(grid, digits = 3))
 ```
