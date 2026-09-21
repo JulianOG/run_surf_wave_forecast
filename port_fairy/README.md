@@ -158,6 +158,11 @@ interpolates the station time series. The offshore/buoy end is dark blue and
 the nearshore end is yellow. The interactive station plot is shown as its own
 final report section.
 
+The report also includes an interactive local-domain mean-current map. It
+averages the final 60 seconds of native FUNWAVE `u`/`v` output, traces animated
+streamlines, and provides OpenStreetMap, satellite imagery, and a streamline
+layer toggle.
+
 ## Interpretation limits
 
 This case is an experimental model diagnostic. Its 5 m grid improves the
