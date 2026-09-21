@@ -1,0 +1,161 @@
+name: Historical Port Fairy reports
+
+on:
+  workflow_dispatch:
+    inputs:
+      observation_times_local:
+        description: 'One or more Port Fairy local times, comma or newline separated (e.g. 2025-02-10 22:00)'
+        required: true
+        type: string
+      rebuild_image:
+        description: Rebuild the FUNWAVE image even if it already exists
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: historical-port-fairy-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/julianog/funwave-tvd
+  IMAGE_TAG: v12
+
+jobs:
+  prepare-dates:
+    runs-on: ubuntu-latest
+    outputs:
+      cases: ${{ steps.cases.outputs.cases }}
+    steps:
+      - id: cases
+        env:
+          RAW_TIMES: ${{ inputs.observation_times_local }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, re
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          local_zone = ZoneInfo("Australia/Melbourne")
+          cases = []
+          for raw in filter(None, (x.strip() for x in re.split(r"[,\n]+", os.environ["RAW_TIMES"]))):
+              try:
+                  value = datetime.fromisoformat(raw)
+              except ValueError as exc:
+                  raise SystemExit(
+                      f"Invalid local time '{raw}'. Use YYYY-MM-DD HH:MM, for example 2025-02-10 22:00."
+                  ) from exc
+              if value.tzinfo is None:
+                  value = value.replace(tzinfo=local_zone)
+              else:
+                  value = value.astimezone(local_zone)
+              cases.append({
+                  "case_id": value.strftime("%Y%m%dT%H%M-") + value.tzname(),
+                  "observation_utc": value.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "observation_local": value.strftime("%Y-%m-%d %H:%M %Z"),
+              })
+          if not cases:
+              raise SystemExit("Enter at least one local observation time.")
+          print("cases=" + json.dumps({"include": cases}, separators=(",", ":")))
+          PY
+
+  ensure-image:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      build_needed: ${{ steps.check.outputs.build_needed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: check
+        env:
+          FORCE_REBUILD: ${{ inputs.rebuild_image || false }}
+        run: |
+          if [ "$FORCE_REBUILD" = "true" ] || ! docker manifest inspect "$IMAGE_NAME:$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: docker/setup-buildx-action@v3
+        if: steps.check.outputs.build_needed == 'true'
+      - uses: docker/build-push-action@v6
+        if: steps.check.outputs.build_needed == 'true'
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          build-args: |
+            FUNWAVE_REF=b4c322e7582035ee19df8e6409a3dfedaff1cb96
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - id: image
+        run: echo "image=$IMAGE_NAME:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+  build-report:
+    needs: [prepare-dates, ensure-image]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare-dates.outputs.cases) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-pandoc@v2
+      - name: System libraries for R spatial packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin libgdal-dev libproj-dev libgeos-dev libudunits2-dev libnetcdf-dev libjpeg-dev
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          cache-version: 10
+          extra-packages: |
+            any::gifski
+            any::htmltools
+            any::htmlwidgets
+            any::jsonlite
+            any::knitr
+            any::leaflet
+            any::ncdf4
+            any::plotly
+            any::RColorBrewer
+            any::rmarkdown
+            any::terra
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build historical bathymetry and buoy/water-level forcing
+        env:
+          PORT_FAIRY_OBSERVATION_UTC: ${{ matrix.observation_utc }}
+        run: Rscript port_fairy/setup_port_fairy_funwave.R
+      - name: Run the historical Port Fairy FUNWAVE case
+        run: |
+          docker run --rm --user root -v "$PWD/port_fairy/output:/work" "${{ needs.ensure-image.outputs.image }}" \
+            -lc 'mkdir -p results && echo "Container CPUs: $(nproc)" && mpirun --allow-run-as-root -np 2 funwave input.txt'
+      - name: Render timestamped historical report
+        env:
+          PORT_FAIRY_SITE_DIR: historical-reports/${{ matrix.case_id }}
+          REPORT_FILE: port-fairy-report-${{ matrix.case_id }}.html
+        run: |
+          mkdir -p "$PORT_FAIRY_SITE_DIR"
+          Rscript -e 'rmarkdown::render("report/port_fairy_report.Rmd", output_file=Sys.getenv("REPORT_FILE"), output_dir=Sys.getenv("PORT_FAIRY_SITE_DIR"), quiet=TRUE)'
+          printf '%s\n' '${{ matrix.observation_local }}' > "$PORT_FAIRY_SITE_DIR/requested-local-time.txt"
+          printf '%s\n' '${{ matrix.observation_utc }}' > "$PORT_FAIRY_SITE_DIR/requested-utc-time.txt"
+      - name: Upload dated report and assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: port-fairy-report-${{ matrix.case_id }}
+          path: historical-reports/${{ matrix.case_id }}/
+          retention-days: 90
+          if-no-files-found: error

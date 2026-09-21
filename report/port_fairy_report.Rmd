@@ -17,6 +17,13 @@ suppressPackageStartupMessages({
 })
 
 case_dir <- normalizePath("../port_fairy/output", mustWork = TRUE)
+# The normal forecast writes support files under site/assets. Historical runs
+# set PORT_FAIRY_SITE_DIR to an isolated report folder so their maps/assets do
+# not overwrite the live report's equivalents.
+report_site_dir <- normalizePath(
+  file.path("..", Sys.getenv("PORT_FAIRY_SITE_DIR", unset = "site")),
+  mustWork = FALSE
+)
 results_dir <- file.path(case_dir, "results")
 forcing <- read.csv(file.path(case_dir, "latest_buoy_forcing.csv"),
                     check.names = FALSE)
@@ -512,7 +519,7 @@ if (nrow(station_timeseries)) {
     yaxis = list(title = "Free-surface elevation, eta (m)", range = eta_display_limits),
     legend = list(orientation = "h")
   )
-  site_assets_dir <- normalizePath("../site/assets", mustWork = FALSE)
+  site_assets_dir <- file.path(report_site_dir, "assets")
   dir.create(site_assets_dir, recursive = TRUE, showWarnings = FALSE)
   htmlwidgets::saveWidget(
     station_plot, file.path(site_assets_dir, "port-fairy-transect-timeseries.html"),
@@ -594,7 +601,7 @@ if (length(current_numbers)) {
         coordinates = lapply(seq_len(nrow(z)), function(k) unname(as.numeric(z[k, ])))
       ))
     })
-    site_assets_dir <- normalizePath("../site/assets", mustWork = FALSE)
+    site_assets_dir <- file.path(report_site_dir, "assets")
     dir.create(site_assets_dir, recursive = TRUE, showWarnings = FALSE)
     jsonlite::write_json(
       list(type = "FeatureCollection", features = features),

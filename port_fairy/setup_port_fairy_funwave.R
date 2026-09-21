@@ -26,8 +26,21 @@ if (!file.exists(bathy_file)) {
   stop("Bathymetry is missing: ", bathy_file)
 }
 
-# Try this month, then the two preceding months. This avoids failing on the
-# first day of a month before the newest near-real-time file is available.
+# An optional UTC timestamp makes this script reproducible for the historical
+# report workflow.  The normal daily workflow leaves it unset and retains the
+# newest-observation behaviour.
+requested_observation_utc <- Sys.getenv("PORT_FAIRY_OBSERVATION_UTC", unset = "")
+if (nzchar(requested_observation_utc)) {
+  requested_observation_utc <- as.POSIXct(
+    requested_observation_utc, tz = "UTC", format = "%Y-%m-%dT%H:%M:%SZ"
+  )
+  if (is.na(requested_observation_utc)) {
+    stop("PORT_FAIRY_OBSERVATION_UTC must be UTC ISO-8601, e.g. 2025-02-10T11:00:00Z")
+  }
+}
+
+# For the normal run, try this month then the two preceding months.  For a
+# historical run, fetch the requested observation's monthly archive.
 download_buoy_month <- function(month_start, data_dir) {
   # `for (x in Date_vector)` drops the Date class in R, so coerce defensively.
   month_start <- as.Date(month_start, origin = "1970-01-01")
@@ -59,10 +72,11 @@ download_buoy_month <- function(month_start, data_dir) {
   NULL
 }
 
-month_starts <- seq(
-  as.Date(format(Sys.time(), "%Y-%m-01")),
-  by = "-1 month", length.out = 3
-)
+month_starts <- if (is.character(requested_observation_utc)) {
+  seq(as.Date(format(Sys.time(), "%Y-%m-01")), by = "-1 month", length.out = 3)
+} else {
+  as.Date(format(requested_observation_utc, "%Y-%m-01"))
+}
 buoy_file <- NULL
 for (month_index in seq_along(month_starts)) {
   buoy_file <- download_buoy_month(month_starts[month_index], data_dir)
@@ -146,7 +160,91 @@ qc <- ncvar_get(nc, "WAVE_quality_control")
 usable <- qc %in% c(1, 2) & is.finite(hs) & is.finite(tp) & is.finite(dir_from) &
   hs > 0 & tp > 0
 if (!any(usable)) stop("No usable (QC 1 or 2) buoy observation is available.")
-i <- tail(which(usable), 1)
+if (is.character(requested_observation_utc)) {
+  # Use the latest valid record at or before the requested time: a historical
+  # case can never accidentally use an observation from the future.
+  candidate <- which(usable & time_utc <= requested_observation_utc)
+  if (!length(candidate)) {
+    stop("No usable buoy observation exists at or before the requested UTC time: ",
+         format(requested_observation_utc, tz = "UTC"))
+  }
+  i <- tail(candidate, 1)
+  message("Historical observation requested: ",
+          format(requested_observation_utc, tz = "UTC"),
+          "; using record: ", format(time_utc[i], tz = "UTC"))
+} else {
+  i <- tail(which(usable), 1)
+}
+
+# ----- Portland hourly water level -----------------------------------------
+# UHSLC fast-delivery data are UTC hourly values in millimetres.  Portland's
+# supplied tidal-datum sheet states that LAT is 0.597 m below AHD, so the
+# conversion used here is: water level AHD (m) = water level LAT (m) - 0.597.
+# It is a static still-water level for this short FUNWAVE run, applied
+# throughout the domain (and therefore at the offshore boundary), not an
+# additional wave-paddle signal.
+download_portland_water_level <- function(data_dir) {
+  url <- "https://uhslc.soest.hawaii.edu/data/csv/fast/hourly/h129.csv"
+  destination <- file.path(data_dir, "UHSLC_h129_Portland_hourly.csv")
+  if (file.exists(destination) && file.info(destination)$size > 1000) return(destination)
+  temporary <- paste0(destination, ".download")
+  status <- tryCatch(utils::download.file(url, temporary, mode = "wb", quiet = TRUE),
+                     error = function(e) 1L)
+  if (isTRUE(status == 0) && file.exists(temporary) && file.info(temporary)$size > 1000) {
+    if (file.exists(destination)) unlink(destination)
+    if (file.rename(temporary, destination)) return(destination)
+  }
+  if (file.exists(temporary)) unlink(temporary)
+  stop("Could not download Portland hourly water levels from UHSLC.")
+}
+
+download_portland_metadata <- function(data_dir) {
+  url <- "https://uhslc.soest.hawaii.edu/data/netcdf/fast/hourly/h129.nc"
+  destination <- file.path(data_dir, "UHSLC_h129_Portland_hourly.nc")
+  if (file.exists(destination) && file.info(destination)$size > 1000) return(destination)
+  temporary <- paste0(destination, ".download")
+  status <- tryCatch(utils::download.file(url, temporary, mode = "wb", quiet = TRUE),
+                     error = function(e) 1L)
+  if (isTRUE(status == 0) && file.exists(temporary) && file.info(temporary)$size > 1000) {
+    if (file.exists(destination)) unlink(destination)
+    if (file.rename(temporary, destination)) return(destination)
+  }
+  if (file.exists(temporary)) unlink(temporary)
+  stop("Could not download Portland UHSLC NetCDF metadata.")
+}
+
+portland_file <- download_portland_water_level(data_dir)
+portland_metadata_file <- download_portland_metadata(data_dir)
+portland_nc <- nc_open(portland_metadata_file)
+on.exit(nc_close(portland_nc), add = TRUE)
+portland_reference_datum <- trimws(paste(ncvar_get(portland_nc, "reference_datum"), collapse = ""))
+if (!identical(portland_reference_datum, "LAT")) {
+  stop("UHSLC h129 reference datum is '", portland_reference_datum,
+       "', not LAT; do not apply the documented LAT-to-AHD conversion.")
+}
+portland <- utils::read.csv(portland_file, header = FALSE,
+                            col.names = c("year", "month", "day", "hour", "level_mm"))
+portland$time_utc <- as.POSIXct(
+  sprintf("%04d-%02d-%02d %02d:00:00", portland$year, portland$month,
+          portland$day, portland$hour), tz = "UTC"
+)
+portland$level_mm[portland$level_mm <= -9990] <- NA_real_
+target_time <- time_utc[i]
+portland_valid <- which(is.finite(portland$level_mm))
+nearest_portland <- portland_valid[which.min(abs(difftime(
+  portland$time_utc[portland_valid], target_time, units = "secs"
+))]
+portland_gap_minutes <- abs(as.numeric(difftime(portland$time_utc[nearest_portland],
+                                                 target_time, units = "mins")))
+if (!is.finite(portland_gap_minutes) || portland_gap_minutes > 90) {
+  stop("No Portland water-level observation is available within 90 minutes of the buoy time.")
+}
+portland_to_ahd_offset_m <- -0.597
+portland_water_level_ahd_m <- portland$level_mm[nearest_portland] / 1000 +
+  portland_to_ahd_offset_m
+message(sprintf("Portland water level: %.3f m LAT = %.3f m AHD",
+                portland$level_mm[nearest_portland] / 1000,
+                portland_water_level_ahd_m))
 
 # Map the measured directional spread (degrees) onto FUNWAVE WK_IRR's
 # Sigma_Theta. Keep the documented 20-degree default only when the matching
@@ -191,9 +289,9 @@ template <- rast(ext(domain_poly_om), resolution = dx, crs = omerc_crs)
 elevation <- project(bathy, template, method = "bilinear")
 
 # DEM elevations are positive on land and negative below datum. FUNWAVE uses
-# positive water depth.  Land/NA cells are retained as 0 m so its wet-dry mask
-# makes them dry; this should be checked visually before a finer production run.
-depth_gis <- -elevation
+# positive water depth. Add Portland's observed AHD still-water level,
+# uniformly across this short local-domain run.
+depth_gis <- portland_water_level_ahd_m - elevation
 depth_gis[is.na(depth_gis)] <- 0
 depth_gis[depth_gis < 0] <- 0
 
@@ -282,7 +380,12 @@ forcing <- data.frame(
   model_x_bearing_deg_true = model_x_bearing,
   model_y_bearing_deg_true = model_y_bearing,
   funwave_theta_peak_deg = theta_peak,
-  inward_source_component = cos(theta_peak * pi / 180)
+  inward_source_component = cos(theta_peak * pi / 180),
+  portland_water_level_time_utc = format(portland$time_utc[nearest_portland], tz = "UTC", usetz = TRUE),
+  portland_water_level_lat_m = portland$level_mm[nearest_portland] / 1000,
+  portland_reference_datum = portland_reference_datum,
+  portland_to_ahd_offset_m = portland_to_ahd_offset_m,
+  portland_water_level_ahd_m_applied = portland_water_level_ahd_m
 )
 write.csv(forcing, file.path(out_dir, "latest_buoy_forcing.csv"), row.names = FALSE)
 

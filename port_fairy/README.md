@@ -45,6 +45,29 @@ The selected forcing fields are:
 | Mean wave direction (from) | Converted to model travel direction for `ThetaPeak`; peak direction is the fallback |
 | Mean directional spread | `Sigma_Theta`; peak spread then 20° are fallbacks |
 
+For each run, the script also reads hourly Portland water levels from the
+[UHSLC fast-delivery archive](https://uhslc.soest.hawaii.edu/data/csv/fast/hourly/h129.csv).
+The companion NetCDF metadata is checked to confirm the reference datum is
+LAT. Portland's supplied tidal-datum information places LAT 0.597 m below AHD,
+so the still water level applied to the depth grid is `CSV_mm / 1000 - 0.597`.
+It is uniform over this small domain during a 10-minute simulation, including
+the offshore boundary. The exact UTC record, datum and AHD value are retained
+in `output/latest_buoy_forcing.csv`.
+
+## Historical reports
+
+Run **Actions → Historical Port Fairy reports → Run workflow** to produce one
+or more reproducible cases. Enter Port Fairy local times separated by commas
+or new lines, for example `2025-02-10 22:00`. The workflow converts each to
+UTC, chooses the latest usable buoy record at or before that time, and writes a
+separate downloadable artifact named `port-fairy-report-YYYYMMDDTHHMM-TZ`.
+Each artifact contains its timestamped HTML report and its own map assets; it
+does not overwrite the normal Pages forecast.
+
+The currently published archives overlap from **September 2022 to July 2026**:
+the Port Fairy IMOS monthly wave files start in September 2022 and the Portland
+UHSLC hourly record presently extends through July 2026.
+
 ## Wave forcing
 
 The model uses FUNWAVE's `WK_IRR` internal irregular wavemaker. It generates a
