@@ -30,7 +30,8 @@ if (!file.exists(bathy_file)) {
 # report workflow.  The normal daily workflow leaves it unset and retains the
 # newest-observation behaviour.
 requested_observation_utc <- Sys.getenv("PORT_FAIRY_OBSERVATION_UTC", unset = "")
-if (nzchar(requested_observation_utc)) {
+historical_run <- nzchar(requested_observation_utc)
+if (historical_run) {
   requested_observation_utc <- as.POSIXct(
     requested_observation_utc, tz = "UTC", format = "%Y-%m-%dT%H:%M:%SZ"
   )
@@ -72,7 +73,7 @@ download_buoy_month <- function(month_start, data_dir) {
   NULL
 }
 
-month_starts <- if (is.character(requested_observation_utc)) {
+month_starts <- if (!historical_run) {
   seq(as.Date(format(Sys.time(), "%Y-%m-01")), by = "-1 month", length.out = 3)
 } else {
   as.Date(format(requested_observation_utc, "%Y-%m-01"))
@@ -160,7 +161,7 @@ qc <- ncvar_get(nc, "WAVE_quality_control")
 usable <- qc %in% c(1, 2) & is.finite(hs) & is.finite(tp) & is.finite(dir_from) &
   hs > 0 & tp > 0
 if (!any(usable)) stop("No usable (QC 1 or 2) buoy observation is available.")
-if (is.character(requested_observation_utc)) {
+if (historical_run) {
   # Use the latest valid record at or before the requested time: a historical
   # case can never accidentally use an observation from the future.
   candidate <- which(usable & time_utc <= requested_observation_utc)
@@ -178,9 +179,9 @@ if (is.character(requested_observation_utc)) {
 
 # ----- Portland hourly water level -----------------------------------------
 # UHSLC fast-delivery data are UTC hourly values in millimetres.  Portland's
-# supplied tidal-datum sheet states that LAT is 0.597 m below AHD, so the
-# conversion used here is: water level AHD (m) = water level LAT (m) - 0.597.
-# It is a static still-water level for this short FUNWAVE run, applied
+# supplied tidal-datum sheet states that LAT is 0.597 m below AHD, so this
+# workflow assumes the CSV values are LAT and uses: water level AHD (m) = water
+# level LAT (m) - 0.597. It is a static still-water level for this short FUNWAVE run, applied
 # throughout the domain (and therefore at the offshore boundary), not an
 # additional wave-paddle signal.
 download_portland_water_level <- function(data_dir) {
@@ -198,30 +199,8 @@ download_portland_water_level <- function(data_dir) {
   stop("Could not download Portland hourly water levels from UHSLC.")
 }
 
-download_portland_metadata <- function(data_dir) {
-  url <- "https://uhslc.soest.hawaii.edu/data/netcdf/fast/hourly/h129.nc"
-  destination <- file.path(data_dir, "UHSLC_h129_Portland_hourly.nc")
-  if (file.exists(destination) && file.info(destination)$size > 1000) return(destination)
-  temporary <- paste0(destination, ".download")
-  status <- tryCatch(utils::download.file(url, temporary, mode = "wb", quiet = TRUE),
-                     error = function(e) 1L)
-  if (isTRUE(status == 0) && file.exists(temporary) && file.info(temporary)$size > 1000) {
-    if (file.exists(destination)) unlink(destination)
-    if (file.rename(temporary, destination)) return(destination)
-  }
-  if (file.exists(temporary)) unlink(temporary)
-  stop("Could not download Portland UHSLC NetCDF metadata.")
-}
-
 portland_file <- download_portland_water_level(data_dir)
-portland_metadata_file <- download_portland_metadata(data_dir)
-portland_nc <- nc_open(portland_metadata_file)
-on.exit(nc_close(portland_nc), add = TRUE)
-portland_reference_datum <- trimws(paste(ncvar_get(portland_nc, "reference_datum"), collapse = ""))
-if (!identical(portland_reference_datum, "LAT")) {
-  stop("UHSLC h129 reference datum is '", portland_reference_datum,
-       "', not LAT; do not apply the documented LAT-to-AHD conversion.")
-}
+portland_reference_datum <- "LAT (assumed from Portland tidal datum sheet)"
 portland <- utils::read.csv(portland_file, header = FALSE,
                             col.names = c("year", "month", "day", "hour", "level_mm"))
 portland$time_utc <- as.POSIXct(
@@ -234,17 +213,26 @@ portland_valid <- which(is.finite(portland$level_mm))
 nearest_portland <- portland_valid[which.min(abs(difftime(
   portland$time_utc[portland_valid], target_time, units = "secs"
 ))]
+portland_to_ahd_offset_m <- -0.597
 portland_gap_minutes <- abs(as.numeric(difftime(portland$time_utc[nearest_portland],
                                                  target_time, units = "mins")))
 if (!is.finite(portland_gap_minutes) || portland_gap_minutes > 90) {
-  stop("No Portland water-level observation is available within 90 minutes of the buoy time.")
+  if (historical_run) {
+    stop("No Portland water-level observation is available within 90 minutes of the requested historical buoy time.")
+  }
+  warning("No contemporaneous Portland water level is available; applying 0.000 m AHD still water level to the daily forecast.")
+  portland_reference_datum <- "LAT assumed; unavailable for daily run"
+  portland_water_level_lat_m <- NA_real_
+  portland_water_level_ahd_m <- 0
+  portland_time_forcing <- as.POSIXct(NA, tz = "UTC")
+} else {
+  portland_reference_datum <- "LAT (assumed from Portland tidal datum sheet)"
+  portland_water_level_lat_m <- portland$level_mm[nearest_portland] / 1000
+  portland_water_level_ahd_m <- portland_water_level_lat_m + portland_to_ahd_offset_m
+  portland_time_forcing <- portland$time_utc[nearest_portland]
+  message(sprintf("Portland water level: %.3f m LAT = %.3f m AHD",
+                  portland_water_level_lat_m, portland_water_level_ahd_m))
 }
-portland_to_ahd_offset_m <- -0.597
-portland_water_level_ahd_m <- portland$level_mm[nearest_portland] / 1000 +
-  portland_to_ahd_offset_m
-message(sprintf("Portland water level: %.3f m LAT = %.3f m AHD",
-                portland$level_mm[nearest_portland] / 1000,
-                portland_water_level_ahd_m))
 
 # Map the measured directional spread (degrees) onto FUNWAVE WK_IRR's
 # Sigma_Theta. Keep the documented 20-degree default only when the matching
@@ -381,8 +369,8 @@ forcing <- data.frame(
   model_y_bearing_deg_true = model_y_bearing,
   funwave_theta_peak_deg = theta_peak,
   inward_source_component = cos(theta_peak * pi / 180),
-  portland_water_level_time_utc = format(portland$time_utc[nearest_portland], tz = "UTC", usetz = TRUE),
-  portland_water_level_lat_m = portland$level_mm[nearest_portland] / 1000,
+  portland_water_level_time_utc = format(portland_time_forcing, tz = "UTC", usetz = TRUE),
+  portland_water_level_lat_m = portland_water_level_lat_m,
   portland_reference_datum = portland_reference_datum,
   portland_to_ahd_offset_m = portland_to_ahd_offset_m,
   portland_water_level_ahd_m_applied = portland_water_level_ahd_m

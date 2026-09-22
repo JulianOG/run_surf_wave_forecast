@@ -47,12 +47,12 @@ The selected forcing fields are:
 
 For each run, the script also reads hourly Portland water levels from the
 [UHSLC fast-delivery archive](https://uhslc.soest.hawaii.edu/data/csv/fast/hourly/h129.csv).
-The companion NetCDF metadata is checked to confirm the reference datum is
-LAT. Portland's supplied tidal-datum information places LAT 0.597 m below AHD,
-so the still water level applied to the depth grid is `CSV_mm / 1000 - 0.597`.
-It is uniform over this small domain during a 10-minute simulation, including
-the offshore boundary. The exact UTC record, datum and AHD value are retained
-in `output/latest_buoy_forcing.csv`.
+It assumes those millimetre values are relative to LAT. Portland's supplied
+tidal-datum information places LAT 0.597 m below AHD, so the still water level
+applied to the depth grid is `CSV_mm / 1000 - 0.597`. It is uniform over this
+small domain during a 10-minute simulation, including the offshore boundary.
+The exact UTC record, stated datum assumption and AHD value are retained in
+`output/latest_buoy_forcing.csv`.
 
 ## Historical reports
 

@@ -5,6 +5,7 @@ output:
     toc: true
     toc_float: true
     theme: flatly
+    self_contained: false
 ---
 
 ```{r setup, include=FALSE}
@@ -666,6 +667,46 @@ final_sixth_saved_end_label <- if (length(final_sixth_indices)) {
 } else {
   "n/a"
 }
+
+# Write real GIF files before the HTML is assembled. This is more reliable than
+# Knitr's animation hook, which can leave an empty figure placeholder when the
+# report is moved to the Pages output directory.
+site_assets_dir <- file.path(report_site_dir, "assets")
+dir.create(site_assets_dir, recursive = TRUE, showWarnings = FALSE)
+full_gif_url <- "assets/port-fairy-full.gif"
+final_sixth_gif_url <- "assets/port-fairy-final-sixth.gif"
+
+draw_eta_frame <- function(k) {
+  r_om <- model_to_rotated_raster(eta_frames[[k]], basename(eta_paths[k]))
+  r_om <- apply_output_visibility_mask_rotated(r_om)
+  r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
+  r_ll <- apply_water_masks_wgs84(r_ll)
+  plot_geographic(r_ll,
+                  main = sprintf("Free-surface elevation: t = %.1f s (WGS84)", eta_time[k]),
+                  col = eta_animation_palette,
+                  range = eta_animation_limits, show_legend = TRUE)
+  add_wave_frame_annotation(r_ll, eta_time[k])
+}
+
+write_eta_gif <- function(indices, file_name, interval) {
+  if (!length(indices)) return(NULL)
+  gif_path <- file.path(site_assets_dir, file_name)
+  gifski::save_gif(
+    expr = for (k in indices) draw_eta_frame(k),
+    gif_file = gif_path, width = 800, height = 600, res = 100,
+    delay = interval, loop = TRUE, progress = FALSE
+  )
+  if (!file.exists(gif_path) || file.info(gif_path)$size < 1000) {
+    stop("GIF was not written: ", gif_path)
+  }
+  gif_path
+}
+
+full_gif_path <- write_eta_gif(full_animation_indices, "port-fairy-full.gif",
+                               full_gif_interval)
+final_sixth_gif_path <- write_eta_gif(final_sixth_indices,
+                                      "port-fairy-final-sixth.gif",
+                                      final_sixth_gif_interval)
 ```
 
 ```{r report-table-style, results='asis', echo=FALSE}
@@ -739,9 +780,9 @@ if (is.null(eta)) {
 
 ## Free-surface animations
 
-Both GIFs use a shared colour scale. Knitr's gifski hook creates them directly
-from this Rmd, after each raw output has been reconstructed on the rotated
-FUNWAVE grid and projected to WGS84. The zero-time initial condition is
+Both GIFs use a shared colour scale and are written as standalone assets from
+this Rmd, after each raw output has been reconstructed on the rotated FUNWAVE
+grid and projected to WGS84. The zero-time initial condition is
 intentionally omitted from the full animation. Each GIF loops for six seconds:
 one represents the complete `r simulation_label` run (saved frames
 `r full_animation_saved_start_label`--`r full_animation_saved_end_label`), and
@@ -750,41 +791,24 @@ saved frames `r final_sixth_saved_start_label`--`r final_sixth_saved_end_label`)
 
 ### Full `r simulation_label` simulation: saved `r full_animation_saved_start_label`--`r full_animation_saved_end_label`
 
-```{r eta-animation-full, fig.show='animate', animation.hook='gifski', interval=full_gif_interval, aniopts='loop', fig.width=8, fig.height=6, dpi=100}
-if (!length(full_animation_indices)) {
+```{r eta-animation-full}
+if (is.null(full_gif_path)) {
   plot.new(); text(0.5, 0.5, "No evolved eta output was produced.")
 } else {
-  for (k in full_animation_indices) {
-    r_om <- model_to_rotated_raster(eta_frames[[k]], basename(eta_paths[k]))
-    r_om <- apply_output_visibility_mask_rotated(r_om)
-    r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
-    r_ll <- apply_water_masks_wgs84(r_ll)
-    plot_geographic(r_ll,
-                    main = sprintf("Free-surface elevation: t = %.1f s (WGS84)", eta_time[k]),
-                    col = eta_animation_palette,
-                    range = eta_animation_limits, show_legend = TRUE)
-    add_wave_frame_annotation(r_ll, eta_time[k])
-  }
+  htmltools::tags$img(src = full_gif_url, alt = "Full Port Fairy free-surface animation",
+                       style = "max-width: 100%; height: auto; display: block;")
 }
 ```
 
 ### Final one-sixth: saved `r final_sixth_saved_start_label`--`r final_sixth_saved_end_label`
 
-```{r eta-animation-final-sixth, fig.show='animate', animation.hook='gifski', interval=final_sixth_gif_interval, aniopts='loop', fig.width=8, fig.height=6, dpi=100}
-if (!length(final_sixth_indices)) {
+```{r eta-animation-final-sixth}
+if (is.null(final_sixth_gif_path)) {
   plot.new(); text(0.5, 0.5, "No final-one-sixth eta output was produced.")
 } else {
-  for (k in final_sixth_indices) {
-    r_om <- model_to_rotated_raster(eta_frames[[k]], basename(eta_paths[k]))
-    r_om <- apply_output_visibility_mask_rotated(r_om)
-    r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
-    r_ll <- apply_water_masks_wgs84(r_ll)
-    plot_geographic(r_ll,
-                    main = sprintf("Free-surface elevation: t = %.1f s (WGS84)", eta_time[k]),
-                    col = eta_animation_palette,
-                    range = eta_animation_limits, show_legend = TRUE)
-    add_wave_frame_annotation(r_ll, eta_time[k])
-  }
+  htmltools::tags$img(src = final_sixth_gif_url,
+                       alt = "Final one-sixth Port Fairy free-surface animation",
+                       style = "max-width: 100%; height: auto; display: block;")
 }
 ```
 
