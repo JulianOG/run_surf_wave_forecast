@@ -212,7 +212,7 @@ target_time <- time_utc[i]
 portland_valid <- which(is.finite(portland$level_mm))
 nearest_portland <- portland_valid[which.min(abs(difftime(
   portland$time_utc[portland_valid], target_time, units = "secs"
-))]
+)))]
 portland_to_ahd_offset_m <- -0.597
 portland_gap_minutes <- abs(as.numeric(difftime(portland$time_utc[nearest_portland],
                                                  target_time, units = "mins")))
