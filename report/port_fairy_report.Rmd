@@ -528,14 +528,18 @@ if (nrow(station_timeseries)) {
   )
 }
 
-# A local-domain current map uses the mean of the final 60 seconds of saved
-# u/v output.  The streamlines are calculated on native model-grid values,
-# then transformed to WGS84 only for display.
+# A local-domain flow map uses the mean of the final 60 seconds of saved u/v
+# output.  If those phase-resolved snapshots cancel to an almost-zero mean, it
+# falls back to the final saved velocity field so that the animation still
+# represents a real FUNWAVE flow field rather than disappearing.
 current_map_url <- NULL
-u_paths <- list.files(results_dir, pattern = "^u_[0-9]{5}$", full.names = TRUE)
-v_paths <- list.files(results_dir, pattern = "^v_[0-9]{5}$", full.names = TRUE)
-u_numbers <- as.integer(sub("^u_", "", basename(u_paths)))
-v_numbers <- as.integer(sub("^v_", "", basename(v_paths)))
+u_paths <- list.files(results_dir, pattern = "^[uU]_[0-9]{5}$", full.names = TRUE)
+v_paths <- list.files(results_dir, pattern = "^[vV]_[0-9]{5}$", full.names = TRUE)
+current_file_number <- function(paths) {
+  as.integer(sub("^[[:alpha:]]_", "", basename(paths)))
+}
+u_numbers <- current_file_number(u_paths)
+v_numbers <- current_file_number(v_paths)
 common_current_numbers <- sort(intersect(u_numbers, v_numbers))
 current_numbers <- integer()
 if (length(common_current_numbers)) {
@@ -552,19 +556,20 @@ model_xy_to_wgs84 <- function(xy_model) {
   crds(project(vect(xy_om, type = "points", crs = crs(depth_raster)), "EPSG:4326"))
 }
 
-trace_current_streamline <- function(seed_xy, u_mean, v_mean, step_m = 25, n_steps = 70) {
+trace_current_streamline <- function(seed_xy, u_flow, v_flow, speed_floor,
+                                     step_m = 25, n_steps = 100) {
   advance <- function(direction) {
     xy <- seed_xy
     out <- matrix(xy, ncol = 2)
     for (step in seq_len(n_steps)) {
-      ij <- pmax(c(1, 1), pmin(c(nrow(u_mean), ncol(u_mean)), round(xy / grid$dx_m[1]) + 1L))
-      ux <- u_mean[ij[1], ij[2]]
-      vy <- v_mean[ij[1], ij[2]]
+      ij <- pmax(c(1, 1), pmin(c(nrow(u_flow), ncol(u_flow)), round(xy / grid$dx_m[1]) + 1L))
+      ux <- u_flow[ij[1], ij[2]]
+      vy <- v_flow[ij[1], ij[2]]
       speed <- sqrt(ux^2 + vy^2)
-      if (!is.finite(speed) || speed < 0.01) break
+      if (!is.finite(speed) || speed < speed_floor) break
       xy <- xy + direction * step_m * c(ux, vy) / speed
-      if (xy[1] < grid$x_wk_m[1] || xy[1] > (nrow(u_mean) - 1) * grid$dx_m[1] ||
-          xy[2] < 0 || xy[2] > (ncol(u_mean) - 1) * grid$dy_m[1]) break
+      if (xy[1] < grid$x_wk_m[1] || xy[1] > (nrow(u_flow) - 1) * grid$dx_m[1] ||
+          xy[2] < 0 || xy[2] > (ncol(u_flow) - 1) * grid$dy_m[1]) break
       out <- rbind(out, xy)
     }
     out
@@ -575,64 +580,104 @@ trace_current_streamline <- function(seed_xy, u_mean, v_mean, step_m = 25, n_ste
 }
 
 if (length(current_numbers)) {
-  read_current_component <- function(paths, numbers, prefix) {
+  read_current_component <- function(paths, numbers) {
+    path_numbers <- current_file_number(paths)
     fields <- lapply(numbers, function(number) {
-      path <- paths[match(number, as.integer(sub(paste0("^", prefix, "_"), "", basename(paths))))]
+      path <- paths[match(number, path_numbers)]
       apply_output_visibility_mask_model(read_text_model(path, basename(path)))
     })
-    Reduce(`+`, fields) / length(fields)
+    total <- matrix(0, nrow = nrow(fields[[1]]), ncol = ncol(fields[[1]]))
+    count <- matrix(0, nrow = nrow(fields[[1]]), ncol = ncol(fields[[1]]))
+    for (field in fields) {
+      keep <- is.finite(field)
+      total[keep] <- total[keep] + field[keep]
+      count[keep] <- count[keep] + 1
+    }
+    total[count == 0] <- NA_real_
+    total[count > 0] <- total[count > 0] / count[count > 0]
+    total
   }
-  u_mean <- read_current_component(u_paths, current_numbers, "u")
-  v_mean <- read_current_component(v_paths, current_numbers, "v")
-  current_speed <- sqrt(u_mean^2 + v_mean^2)
-  seed_x <- seq(grid$x_wk_m[1] + 100, (nrow(u_mean) - 1) * grid$dx_m[1] - 100, length.out = 13)
-  seed_y <- seq(100, (ncol(u_mean) - 1) * grid$dy_m[1] - 100, length.out = 9)
-  seeds <- as.matrix(expand.grid(seed_x, seed_y))
+  u_flow <- read_current_component(u_paths, current_numbers)
+  v_flow <- read_current_component(v_paths, current_numbers)
+  current_speed <- sqrt(u_flow^2 + v_flow^2)
+  current_label <- "Mean depth-averaged velocity: final 60 s"
+  current_time_label <- paste(elapsed_clock(min(current_numbers * grid$plot_intv_s[1])),
+                              "to", elapsed_clock(max(current_numbers * grid$plot_intv_s[1])))
+  valid_speed <- current_speed[is.finite(current_speed) & current_speed > 0]
+  speed_floor <- if (length(valid_speed)) {
+    max(1e-7, 0.02 * as.numeric(stats::quantile(valid_speed, 0.15, na.rm = TRUE)))
+  } else {
+    Inf
+  }
+  if (!any(is.finite(current_speed) & current_speed >= speed_floor)) {
+    last_number <- tail(current_numbers, 1)
+    u_flow <- read_current_component(u_paths, last_number)
+    v_flow <- read_current_component(v_paths, last_number)
+    current_speed <- sqrt(u_flow^2 + v_flow^2)
+    valid_speed <- current_speed[is.finite(current_speed) & current_speed > 0]
+    speed_floor <- if (length(valid_speed)) {
+      max(1e-7, 0.02 * as.numeric(stats::quantile(valid_speed, 0.15, na.rm = TRUE)))
+    } else {
+      Inf
+    }
+    current_label <- "Depth-averaged velocity: final saved snapshot"
+    current_time_label <- elapsed_clock(last_number * grid$plot_intv_s[1])
+  }
+
+  x_margin <- max(2 * grid$dx_m[1], 25)
+  y_margin <- max(2 * grid$dy_m[1], 25)
+  x_start <- grid$x_wk_m[1] + x_margin
+  x_end <- (nrow(u_flow) - 1) * grid$dx_m[1] - x_margin
+  y_start <- y_margin
+  y_end <- (ncol(u_flow) - 1) * grid$dy_m[1] - y_margin
+  seeds <- if (x_start < x_end && y_start < y_end && is.finite(speed_floor)) {
+    as.matrix(expand.grid(
+      seq(x_start, x_end, length.out = 15),
+      seq(y_start, y_end, length.out = 11)
+    ))
+  } else {
+    matrix(numeric(), ncol = 2)
+  }
   streamlines_model <- lapply(seq_len(nrow(seeds)), function(k) {
-    ij <- pmax(c(1, 1), pmin(c(nrow(u_mean), ncol(u_mean)), round(seeds[k, ] / grid$dx_m[1]) + 1L))
-    if (!is.finite(current_speed[ij[1], ij[2]]) || current_speed[ij[1], ij[2]] < 0.01) return(NULL)
-    trace_current_streamline(seeds[k, ], u_mean, v_mean)
+    ij <- pmax(c(1, 1), pmin(c(nrow(u_flow), ncol(u_flow)), round(seeds[k, ] / grid$dx_m[1]) + 1L))
+    if (!is.finite(current_speed[ij[1], ij[2]]) || current_speed[ij[1], ij[2]] < speed_floor) return(NULL)
+    trace_current_streamline(seeds[k, ], u_flow, v_flow, speed_floor)
   })
   streamlines_model <- Filter(function(z) !is.null(z) && nrow(z) >= 4, streamlines_model)
-  if (length(streamlines_model)) {
-    streamlines_ll <- lapply(streamlines_model, model_xy_to_wgs84)
-    features <- lapply(streamlines_ll, function(z) {
-      list(type = "Feature", properties = list(), geometry = list(
-        type = "LineString",
-        coordinates = lapply(seq_len(nrow(z)), function(k) unname(as.numeric(z[k, ])))
-      ))
-    })
-    site_assets_dir <- file.path(report_site_dir, "assets")
-    dir.create(site_assets_dir, recursive = TRUE, showWarnings = FALSE)
-    jsonlite::write_json(
-      list(type = "FeatureCollection", features = features),
-      file.path(site_assets_dir, "port-fairy-current-streamlines.json"),
-      auto_unbox = TRUE, digits = 7, pretty = FALSE
-    )
-    bounds_ll <- model_outline_ll_xy
-    west <- min(bounds_ll[, 1]); east <- max(bounds_ll[, 1])
-    south <- min(bounds_ll[, 2]); north <- max(bounds_ll[, 2])
-    x_pad <- (east - west) * 0.04; y_pad <- (north - south) * 0.04
-    map_html <- c(
-      "<!doctype html><html><head><meta charset='utf-8'>",
-      "<meta name='viewport' content='width=device-width, initial-scale=1'>",
-      "<link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'>",
-      "<style>html,body,#map{height:100%;margin:0}.info{background:rgba(255,255,255,.92);padding:6px;font:13px Arial}</style></head><body><div id='map'></div>",
-      "<script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script><script>",
-      "const map=L.map('map',{minZoom:14,maxZoom:18});",
-      sprintf("const bounds=L.latLngBounds([[%.7f,%.7f],[%.7f,%.7f]]);", south-y_pad, west-x_pad, north+y_pad, east+x_pad),
-      "const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);",
-      "const satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri'});",
-      "map.fitBounds(bounds);map.setMaxBounds(bounds);",
-      "const flow=L.layerGroup().addTo(map);L.control.layers({'OpenStreetMap':osm,'Satellite imagery':satellite},{'Animated mean-current streamlines':flow},{collapsed:false}).addTo(map);",
-      "L.control({position:'bottomleft'}).onAdd=function(){const d=L.DomUtil.create('div','info');d.innerHTML='Mean depth-averaged current: final 60 s<br>Particles follow native FUNWAVE u/v streamlines';return d;};",
-      "L.control({position:'bottomleft'}).addTo(map);",
-      "fetch('port-fairy-current-streamlines.json').then(r=>r.json()).then(g=>{const lines=g.features.map(f=>f.geometry.coordinates.map(p=>[p[1],p[0]]));const dots=lines.map((line,i)=>L.circleMarker(line[0],{radius:3,color:'#08306b',weight:0,fillOpacity:.9}).addTo(flow));lines.forEach(line=>L.polyline(line,{color:'#2c7fb8',weight:1,opacity:.55}).addTo(flow));function animate(t){lines.forEach((line,i)=>{const q=((t/7000)+(i/lines.length))%1*(line.length-1);const j=Math.floor(q),a=line[j],b=line[Math.min(j+1,line.length-1)],f=q-j;dots[i].setLatLng([a[0]+f*(b[0]-a[0]),a[1]+f*(b[1]-a[1])]);});requestAnimationFrame(animate)}requestAnimationFrame(animate);});",
-      "</script></body></html>"
-    )
-    writeLines(map_html, file.path(site_assets_dir, "port-fairy-mean-current-streamlines.html"))
-    current_map_url <- "assets/port-fairy-mean-current-streamlines.html"
-  }
+  streamlines_ll <- lapply(streamlines_model, model_xy_to_wgs84)
+  streamlines_json <- jsonlite::toJSON(
+    lapply(streamlines_ll, function(z) {
+      lapply(seq_len(nrow(z)), function(k) unname(as.numeric(z[k, ])))
+    }),
+    auto_unbox = TRUE, digits = 7
+  )
+  site_assets_dir <- file.path(report_site_dir, "assets")
+  dir.create(site_assets_dir, recursive = TRUE, showWarnings = FALSE)
+  bounds_ll <- model_outline_ll_xy
+  west <- min(bounds_ll[, 1]); east <- max(bounds_ll[, 1])
+  south <- min(bounds_ll[, 2]); north <- max(bounds_ll[, 2])
+  x_pad <- (east - west) * 0.04; y_pad <- (north - south) * 0.04
+  map_html <- c(
+    "<!doctype html><html><head><meta charset='utf-8'>",
+    "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+    "<link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'>",
+    "<style>html,body,#map{height:100%;margin:0}.info{background:rgba(255,255,255,.92);padding:6px;font:13px Arial}</style></head><body><div id='map'></div>",
+    "<script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script><script>",
+    "const map=L.map('map',{minZoom:14,maxZoom:18});",
+    sprintf("const bounds=L.latLngBounds([[%.7f,%.7f],[%.7f,%.7f]]);", south-y_pad, west-x_pad, north+y_pad, east+x_pad),
+    "const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);",
+    "const satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri'});",
+    "map.fitBounds(bounds);map.setMaxBounds(bounds);",
+    "const flow=L.layerGroup().addTo(map);L.control.layers({'OpenStreetMap':osm,'Satellite imagery':satellite},{'Animated flow streamlines':flow},{collapsed:false}).addTo(map);",
+    paste0("L.control({position:'bottomleft'}).onAdd=function(){const d=L.DomUtil.create('div','info');d.innerHTML='", current_label, "<br>Model time: ", current_time_label, "';return d;};"),
+    "L.control({position:'bottomleft'}).addTo(map);",
+    paste0("const lines=", streamlines_json, ";"),
+    "const dots=[];lines.forEach((line,i)=>{L.polyline(line,{color:'#2c7fb8',weight:1,opacity:.65}).addTo(flow);dots.push(L.circleMarker(line[0],{radius:3,color:'#08306b',weight:0,fillOpacity:.95}).addTo(flow));});",
+    "if(lines.length){function animate(t){lines.forEach((line,i)=>{const q=((t/6500)+(i/lines.length))%1*(line.length-1);const j=Math.floor(q),a=line[j],b=line[Math.min(j+1,line.length-1)],f=q-j;dots[i].setLatLng([a[0]+f*(b[0]-a[0]),a[1]+f*(b[1]-a[1])]);});requestAnimationFrame(animate)}requestAnimationFrame(animate)}else{L.control({position:'topright'}).onAdd=function(){const d=L.DomUtil.create('div','info');d.innerHTML='No finite flow paths were available in this run.';return d;};L.control({position:'topright'}).addTo(map);}",
+    "</script></body></html>"
+  )
+  writeLines(map_html, file.path(site_assets_dir, "port-fairy-mean-current-streamlines.html"))
+  current_map_url <- "assets/port-fairy-mean-current-streamlines.html"
 }
 
 # A single fixed range makes every eta frame and map comparable across days.
@@ -885,11 +930,13 @@ if (!nrow(station_timeseries)) {
 }
 ```
 
-## Mean current streamlines
+## Animated flow streamlines
 
-This animated map averages native FUNWAVE `u` and `v` fields over the final
-60 seconds, then traces streamlines within the local model domain. It has
-OpenStreetMap and satellite basemaps, with the streamline layer switchable.
+This map traces native FUNWAVE depth-averaged `u` and `v` fields over the final
+60 seconds. If the phase-resolved snapshots cancel in the mean, it uses the
+final saved velocity field instead. Moving dots travel along the streamlines;
+the map has OpenStreetMap and satellite basemaps, with the flow layer
+switchable.
 
 ```{r current-streamlines, echo=FALSE}
 if (is.null(current_map_url)) {
