@@ -37,7 +37,21 @@ if (!is.finite(grid$dx_m[1]) || !is.finite(grid$total_time_s[1]) ||
     grid$total_time_s[1] <= 0 || grid$plot_intv_s[1] <= 0) {
   stop("Grid metadata must contain positive dx_m, total_time_s and plot_intv_s values.")
 }
-grid_tag <- paste0(sprintf("%.0f", grid$dx_m[1]), "m")
+metres_label <- function(x) sub("\\.?0+$", "", format(x, trim = TRUE, scientific = FALSE))
+public_output_dx_m <- if ("public_output_dx_m" %in% names(grid) &&
+                          is.finite(grid$public_output_dx_m[1])) {
+  grid$public_output_dx_m[1]
+} else {
+  max(10, grid$dx_m[1])
+}
+public_output_factor <- public_output_dx_m / grid$dx_m[1]
+if (public_output_factor < 1 ||
+    abs(public_output_factor - round(public_output_factor)) > 1e-8) {
+  stop("The requested public-output resolution must be an integer multiple of the model resolution.")
+}
+public_output_factor <- as.integer(round(public_output_factor))
+grid_tag <- paste0(metres_label(grid$dx_m[1]), "m")
+public_grid_tag <- paste0(metres_label(public_output_dx_m), "m")
 simulation_minutes <- grid$total_time_s[1] / 60
 final_sixth_start_s <- (5 / 6) * grid$total_time_s[1]
 elapsed_clock <- function(elapsed_s) {
@@ -185,11 +199,13 @@ symmetric_raster_limits <- function(r) {
   c(-m, m)
 }
 
-write_model_output_rasters <- function(r_om, stem, method = "bilinear") {
-  # Keep water-level products on cells that are water in the DEM before any
-  # geographic reprojection. A second nearest-neighbour mask is applied after
-  # projection to keep interpolation from bleeding values onto land pixels.
-  r_om <- apply_output_visibility_mask_rotated(r_om)
+write_model_output_rasters <- function(r_om, stem, method = "bilinear",
+                                       already_public = FALSE) {
+  # `make_public_output_rotated()` first masks native-grid values then
+  # aggregates to the requested public resolution before any geographic
+  # reprojection. This keeps a 2.5 m historical simulation numerical while
+  # publishing compact 10 m maps and GeoTIFFs.
+  if (!already_public) r_om <- make_public_output_rotated(r_om)
   writeRaster(r_om, file.path(case_dir, paste0(stem, "_rotated_omerc.tif")),
               overwrite = TRUE)
   r_ll <- project(r_om, "EPSG:4326", method = method)
@@ -259,6 +275,26 @@ apply_output_visibility_mask_model <- function(z) {
 apply_output_visibility_mask_rotated <- function(r_om) {
   r_om <- apply_dem_water_mask_rotated(r_om)
   r_om[is.na(shoreward_of_paddle_rotated) | shoreward_of_paddle_rotated <= 0] <- NA_real_
+  r_om
+}
+
+make_public_output_rotated <- function(r_om) {
+  r_om <- apply_output_visibility_mask_rotated(r_om)
+  if (public_output_factor <= 1L) return(r_om)
+
+  # A public cell is retained only where all contributing native cells are
+  # water and shoreward of the wavemaker. This prevents a 10 m aggregation
+  # from leaking displayed values across the coast or source-side mask.
+  visibility <- ifel(
+    is.na(dem_water_mask_rotated) | is.na(shoreward_of_paddle_rotated) |
+      dem_water_mask_rotated <= 0 | shoreward_of_paddle_rotated <= 0,
+    0, 1
+  )
+  public_visibility <- aggregate(
+    visibility, fact = public_output_factor, fun = min, na.rm = TRUE
+  )
+  r_om <- aggregate(r_om, fact = public_output_factor, fun = mean, na.rm = TRUE)
+  r_om[is.na(public_visibility) | public_visibility <= 0] <- NA_real_
   r_om
 }
 
@@ -448,17 +484,30 @@ if (length(eta_paths) &&
      max(eta_time) < grid$total_time_s[1] - grid$plot_intv_s[1])) {
   stop("eta file numbers do not map to the configured simulation period.")
 }
-eta_frames <- lapply(eta_paths, function(path) {
+read_public_output_raster <- function(path, label = basename(path)) {
   z <- read_text_model(path, basename(path))
   if (!is.null(mask)) z[mask <= 0] <- NA_real_
-  apply_output_visibility_mask_model(z)
-})
-eta_max <- if (length(eta_frames)) {
-  do.call(pmax, c(eta_frames, na.rm = TRUE))
-} else {
-  NULL
+  make_public_output_rotated(model_to_rotated_raster(z, label))
 }
-if (!is.null(eta_max)) eta_max[!is.finite(eta_max)] <- NA_real_
+maximum_public_raster <- function(fields) {
+  if (!length(fields)) return(NULL)
+  out <- fields[[1]]
+  if (length(fields) > 1) {
+    for (k in 2:length(fields)) {
+      out <- terra::app(c(out, fields[[k]]), fun = max, na.rm = TRUE)
+    }
+  }
+  out
+}
+
+# Retain report fields only at the requested public resolution. This is
+# essential for 2.5 m historical cases: FUNWAVE still writes native 2.5 m
+# files, but the report never holds all of those large matrices in memory.
+eta_public_frames <- lapply(eta_paths, read_public_output_raster)
+eta_max <- maximum_public_raster(eta_public_frames)
+if (!is.null(eta_max)) {
+  eta_max[!is.finite(eta_max)] <- NA_real_
+}
 
 # FUNWAVE's WaveHeight=T diagnostic is written by PREVIEW_MEAN as Hsig files.
 # It uses the model time step internally, so it is the correct way to assess
@@ -467,17 +516,16 @@ hsig_paths <- list.files(results_dir, pattern = "^Hsig_[0-9]{5}$",
                          full.names = TRUE)
 hsig_number <- as.integer(sub("^Hsig_", "", basename(hsig_paths)))
 hsig_paths <- hsig_paths[order(hsig_number)]
-hsig_frames <- lapply(hsig_paths, function(path) {
-  z <- read_text_model(path, basename(path))
-  if (!is.null(mask)) z[mask <= 0] <- NA_real_
-  apply_output_visibility_mask_model(z)
-})
-hsig_max <- if (length(hsig_frames)) {
-  do.call(pmax, c(hsig_frames, na.rm = TRUE))
-} else {
-  NULL
+hsig_public_frames <- lapply(hsig_paths, read_public_output_raster)
+hsig_max <- maximum_public_raster(hsig_public_frames)
+if (!is.null(hsig_max)) {
+  hsig_max[!is.finite(hsig_max)] <- NA_real_
 }
-if (!is.null(hsig_max)) hsig_max[!is.finite(hsig_max)] <- NA_real_
+
+# `eta_max` and `hsig_max` above are already rotated public-resolution rasters,
+# not model-index matrices. The original raw field files remain untouched.
+eta_frames <- NULL
+hsig_frames <- NULL
 
 # Read the five FUNWAVE station files.  Each file is time, eta, u, v and the
 # position metadata was created with stations.txt by the case setup script.
@@ -528,11 +576,12 @@ if (nrow(station_timeseries)) {
   )
 }
 
-# A local-domain flow map uses the mean of the final 60 seconds of saved u/v
-# output.  If those phase-resolved snapshots cancel to an almost-zero mean, it
-# falls back to the final saved velocity field so that the animation still
-# represents a real FUNWAVE flow field rather than disappearing.
-current_map_url <- NULL
+# Current diagnostics use the final 60 seconds of saved u/v output. If the
+# phase-resolved fields largely cancel in that mean, use the final saved field
+# and label it honestly as a snapshot. Option 2 is a grid-advection particle
+# map; option 1 remains as a separately inspectable streamline diagnostic.
+current_particle_map_url <- NULL
+current_streamline_debug_url <- NULL
 u_paths <- list.files(results_dir, pattern = "^[uU]_[0-9]{5}$", full.names = TRUE)
 v_paths <- list.files(results_dir, pattern = "^[vV]_[0-9]{5}$", full.names = TRUE)
 current_file_number <- function(paths) {
@@ -546,6 +595,15 @@ if (length(common_current_numbers)) {
   current_times <- common_current_numbers * grid$plot_intv_s[1]
   current_numbers <- tail(common_current_numbers[current_times >= max(current_times) - 60], 5)
 }
+current_label <- "No paired U/V output was produced"
+current_time_label <- "n/a"
+current_peak_speed <- NA_real_
+current_speed_floor <- NA_real_
+current_seed_count <- 0L
+current_streamline_count <- 0L
+current_public_cell_count <- 0L
+current_public_grid_shape <- "n/a"
+current_selected_files <- "none"
 
 model_xy_to_wgs84 <- function(xy_model) {
   xy_om <- if (source_is_low_x) {
@@ -562,7 +620,8 @@ trace_current_streamline <- function(seed_xy, u_flow, v_flow, speed_floor,
     xy <- seed_xy
     out <- matrix(xy, ncol = 2)
     for (step in seq_len(n_steps)) {
-      ij <- pmax(c(1, 1), pmin(c(nrow(u_flow), ncol(u_flow)), round(xy / grid$dx_m[1]) + 1L))
+      ij <- pmax(c(1, 1), pmin(c(nrow(u_flow), ncol(u_flow)),
+                               round(xy / grid$dx_m[1]) + 1L))
       ux <- u_flow[ij[1], ij[2]]
       vy <- v_flow[ij[1], ij[2]]
       speed <- sqrt(ux^2 + vy^2)
@@ -597,6 +656,8 @@ if (length(current_numbers)) {
     total[count > 0] <- total[count > 0] / count[count > 0]
     total
   }
+
+  current_selected_files <- paste(sprintf("%05d", current_numbers), collapse = ", ")
   u_flow <- read_current_component(u_paths, current_numbers)
   v_flow <- read_current_component(v_paths, current_numbers)
   current_speed <- sqrt(u_flow^2 + v_flow^2)
@@ -604,25 +665,29 @@ if (length(current_numbers)) {
   current_time_label <- paste(elapsed_clock(min(current_numbers * grid$plot_intv_s[1])),
                               "to", elapsed_clock(max(current_numbers * grid$plot_intv_s[1])))
   valid_speed <- current_speed[is.finite(current_speed) & current_speed > 0]
+  mean_peak_speed <- if (length(valid_speed)) max(valid_speed) else 0
   speed_floor <- if (length(valid_speed)) {
-    max(1e-7, 0.02 * as.numeric(stats::quantile(valid_speed, 0.15, na.rm = TRUE)))
+    max(0.005, 0.02 * as.numeric(stats::quantile(valid_speed, 0.15, na.rm = TRUE)))
   } else {
     Inf
   }
-  if (!any(is.finite(current_speed) & current_speed >= speed_floor)) {
+  if (!is.finite(mean_peak_speed) || mean_peak_speed < 0.005) {
     last_number <- tail(current_numbers, 1)
     u_flow <- read_current_component(u_paths, last_number)
     v_flow <- read_current_component(v_paths, last_number)
     current_speed <- sqrt(u_flow^2 + v_flow^2)
     valid_speed <- current_speed[is.finite(current_speed) & current_speed > 0]
     speed_floor <- if (length(valid_speed)) {
-      max(1e-7, 0.02 * as.numeric(stats::quantile(valid_speed, 0.15, na.rm = TRUE)))
+      max(0.005, 0.02 * as.numeric(stats::quantile(valid_speed, 0.15, na.rm = TRUE)))
     } else {
       Inf
     }
     current_label <- "Depth-averaged velocity: final saved snapshot"
     current_time_label <- elapsed_clock(last_number * grid$plot_intv_s[1])
+    current_selected_files <- sprintf("%05d", last_number)
   }
+  current_peak_speed <- if (length(valid_speed)) max(valid_speed) else NA_real_
+  current_speed_floor <- speed_floor
 
   x_margin <- max(2 * grid$dx_m[1], 25)
   y_margin <- max(2 * grid$dy_m[1], 25)
@@ -638,47 +703,183 @@ if (length(current_numbers)) {
   } else {
     matrix(numeric(), ncol = 2)
   }
+  current_seed_count <- nrow(seeds)
   streamlines_model <- lapply(seq_len(nrow(seeds)), function(k) {
-    ij <- pmax(c(1, 1), pmin(c(nrow(u_flow), ncol(u_flow)), round(seeds[k, ] / grid$dx_m[1]) + 1L))
+    ij <- pmax(c(1, 1), pmin(c(nrow(u_flow), ncol(u_flow)),
+                             round(seeds[k, ] / grid$dx_m[1]) + 1L))
     if (!is.finite(current_speed[ij[1], ij[2]]) || current_speed[ij[1], ij[2]] < speed_floor) return(NULL)
     trace_current_streamline(seeds[k, ], u_flow, v_flow, speed_floor)
   })
   streamlines_model <- Filter(function(z) !is.null(z) && nrow(z) >= 4, streamlines_model)
   streamlines_ll <- lapply(streamlines_model, model_xy_to_wgs84)
-  streamlines_json <- jsonlite::toJSON(
-    lapply(streamlines_ll, function(z) {
-      lapply(seq_len(nrow(z)), function(k) unname(as.numeric(z[k, ])))
-    }),
-    auto_unbox = TRUE, digits = 7
-  )
+  streamlines_ll <- Filter(function(z) {
+    is.matrix(z) && nrow(z) >= 4 && all(is.finite(z))
+  }, streamlines_ll)
+  current_streamline_count <- length(streamlines_ll)
+
   site_assets_dir <- file.path(report_site_dir, "assets")
   dir.create(site_assets_dir, recursive = TRUE, showWarnings = FALSE)
-  bounds_ll <- model_outline_ll_xy
-  west <- min(bounds_ll[, 1]); east <- max(bounds_ll[, 1])
-  south <- min(bounds_ll[, 2]); north <- max(bounds_ll[, 2])
+  west <- min(model_outline_ll_xy[, 1]); east <- max(model_outline_ll_xy[, 1])
+  south <- min(model_outline_ll_xy[, 2]); north <- max(model_outline_ll_xy[, 2])
   x_pad <- (east - west) * 0.04; y_pad <- (north - south) * 0.04
-  map_html <- c(
-    "<!doctype html><html><head><meta charset='utf-8'>",
-    "<meta name='viewport' content='width=device-width, initial-scale=1'>",
-    "<link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'>",
-    "<style>html,body,#map{height:100%;margin:0}.info{background:rgba(255,255,255,.92);padding:6px;font:13px Arial}</style></head><body><div id='map'></div>",
-    "<script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script><script>",
-    "const map=L.map('map',{minZoom:14,maxZoom:18});",
-    sprintf("const bounds=L.latLngBounds([[%.7f,%.7f],[%.7f,%.7f]]);", south-y_pad, west-x_pad, north+y_pad, east+x_pad),
-    "const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);",
-    "const satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri'});",
-    "map.fitBounds(bounds);map.setMaxBounds(bounds);",
-    "const flow=L.layerGroup().addTo(map);L.control.layers({'OpenStreetMap':osm,'Satellite imagery':satellite},{'Animated flow streamlines':flow},{collapsed:false}).addTo(map);",
-    paste0("L.control({position:'bottomleft'}).onAdd=function(){const d=L.DomUtil.create('div','info');d.innerHTML='", current_label, "<br>Model time: ", current_time_label, "';return d;};"),
-    "L.control({position:'bottomleft'}).addTo(map);",
-    paste0("const lines=", streamlines_json, ";"),
-    "const dots=[];lines.forEach((line,i)=>{L.polyline(line,{color:'#2c7fb8',weight:1,opacity:.65}).addTo(flow);dots.push(L.circleMarker(line[0],{radius:3,color:'#08306b',weight:0,fillOpacity:.95}).addTo(flow));});",
-    "if(lines.length){function animate(t){lines.forEach((line,i)=>{const q=((t/6500)+(i/lines.length))%1*(line.length-1);const j=Math.floor(q),a=line[j],b=line[Math.min(j+1,line.length-1)],f=q-j;dots[i].setLatLng([a[0]+f*(b[0]-a[0]),a[1]+f*(b[1]-a[1])]);});requestAnimationFrame(animate)}requestAnimationFrame(animate)}else{L.control({position:'topright'}).onAdd=function(){const d=L.DomUtil.create('div','info');d.innerHTML='No finite flow paths were available in this run.';return d;};L.control({position:'topright'}).addTo(map);}",
-    "</script></body></html>"
+  current_bounds <- list(c(south - y_pad, west - x_pad), c(north + y_pad, east + x_pad))
+  outline_latlng <- lapply(seq_len(nrow(model_outline_ll_xy)), function(k) {
+    unname(as.numeric(model_outline_ll_xy[k, c(2, 1)]))
+  })
+  source_latlng <- lapply(seq_len(nrow(source_line_ll_xy)), function(k) {
+    unname(as.numeric(source_line_ll_xy[k, c(2, 1)]))
+  })
+  buoy_latlng <- unname(as.numeric(c(crds(buoy_ll)[1, 2], crds(buoy_ll)[1, 1])))
+  debug_prefix <- paste(
+    "Paired U/V files:", length(common_current_numbers),
+    "Selected file number(s):", current_selected_files,
+    "Field:", current_label,
+    "Model time:", current_time_label,
+    "Peak speed (m/s):", ifelse(is.finite(current_peak_speed), format(round(current_peak_speed, 3), nsmall = 3), "n/a"),
+    "Trace floor (m/s):", ifelse(is.finite(current_speed_floor), format(round(current_speed_floor, 3), nsmall = 3), "n/a"),
+    sep = "\n"
   )
-  writeLines(map_html, file.path(site_assets_dir, "port-fairy-mean-current-streamlines.html"))
-  current_map_url <- "assets/port-fairy-mean-current-streamlines.html"
+
+  # Option 1: retain a small, independently inspectable streamline map. The
+  # debug panel exposes every failure point instead of silently drawing no
+  # paths. It is intentionally kept separate from the grid-particle map.
+  option1_data <- list(
+    bounds = current_bounds,
+    lines = lapply(streamlines_ll, function(z) {
+      lapply(seq_len(nrow(z)), function(k) unname(as.numeric(z[k, c(2, 1)])))
+    }),
+    outline = outline_latlng,
+    source = source_latlng,
+    buoy = buoy_latlng,
+    label = paste(current_label, paste0("Model time: ", current_time_label), sep = "\n"),
+    debug = paste(debug_prefix, "Option 1 seeds:", current_seed_count,
+                  "Option 1 completed paths:", current_streamline_count,
+                  sep = "\n")
+  )
+  option1_js <- paste0(
+    "function(el, x, data) {",
+    "var map=this,bounds=L.latLngBounds(data.bounds),lines=data.lines||[];",
+    "var osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);",
+    "var satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri'});",
+    "var paths=L.layerGroup().addTo(map),particles=L.layerGroup().addTo(map);",
+    "var grid=L.polyline(data.outline,{color:'black',weight:2}),paddle=L.polyline(data.source,{color:'dodgerblue',weight:2,dashArray:'6 6'}),buoy=L.circleMarker(data.buoy,{radius:5,color:'red',fillOpacity:1});",
+    "grid.addTo(map);paddle.addTo(map);buoy.addTo(map);map.fitBounds(bounds,{padding:[4,4]});map.setMaxBounds(bounds);",
+    "L.control.layers({'OpenStreetMap':osm,'Satellite imagery':satellite},{'Option 1 flow paths':paths,'Option 1 moving dots':particles,'FUNWAVE grid':grid,'Internal wavemaker':paddle,'Buoy':buoy},{collapsed:false}).addTo(map);",
+    "function panel(position,text){var c=L.control({position:position});c.onAdd=function(){var d=L.DomUtil.create('div');d.style.background='rgba(255,255,255,.92)';d.style.padding='6px';d.style.font='12px Arial';d.style.whiteSpace='pre-line';d.textContent=text;return d;};c.addTo(map);}",
+    "panel('bottomleft',data.label);panel('topright',data.debug);",
+    "var dots=[];lines.forEach(function(line){if(line&&line.length>1){L.polyline(line,{color:'#2c7fb8',weight:1.2,opacity:.72}).addTo(paths);dots.push({line:line,marker:L.circleMarker(line[0],{radius:3,color:'#08306b',weight:0,fillOpacity:.95}).addTo(particles)});}});",
+    "if(dots.length){function animate(t){dots.forEach(function(item,i){var q=((t/6500)+(i/dots.length))%1*(item.line.length-1),j=Math.floor(q),a=item.line[j],b=item.line[Math.min(j+1,item.line.length-1)],f=q-j;item.marker.setLatLng([a[0]+f*(b[0]-a[0]),a[1]+f*(b[1]-a[1])]);});window.requestAnimationFrame(animate);}window.requestAnimationFrame(animate);}",
+    "window.setTimeout(function(){map.invalidateSize();map.fitBounds(bounds,{padding:[4,4]});},250);",
+    "}"
+  )
+  option1_widget <- leaflet::leaflet(
+    width = "100%", height = 560,
+    options = leaflet::leafletOptions(minZoom = 14, maxZoom = 18, maxBoundsViscosity = 1)
+  )
+  option1_widget <- htmlwidgets::onRender(option1_widget, option1_js, data = option1_data)
+  htmlwidgets::saveWidget(
+    option1_widget,
+    file.path(site_assets_dir, "port-fairy-current-streamline-diagnostic.html"),
+    selfcontained = FALSE
+  )
+  current_streamline_debug_url <- "assets/port-fairy-current-streamline-diagnostic.html"
+
+  # Convert model-axis u/v to true east/north components, aggregate to the
+  # public grid in the rotated CRS, then project to a regular WGS84 field for
+  # browser-side particle advection. No extra R or Docker package is needed.
+  x_bearing <- grid$model_x_bearing_deg_true[1] * pi / 180
+  y_bearing <- grid$model_y_bearing_deg_true[1] * pi / 180
+  u_east_model <- u_flow * sin(x_bearing) + v_flow * sin(y_bearing)
+  v_north_model <- u_flow * cos(x_bearing) + v_flow * cos(y_bearing)
+  u_east_om <- make_public_output_rotated(model_to_rotated_raster(u_east_model, "eastward current"))
+  v_north_om <- make_public_output_rotated(model_to_rotated_raster(v_north_model, "northward current"))
+  u_east_ll <- apply_water_masks_wgs84(project(u_east_om, "EPSG:4326", method = "bilinear"))
+  v_north_ll <- apply_water_masks_wgs84(project(v_north_om, "EPSG:4326", method = "bilinear"))
+  if (!compareGeom(u_east_ll, v_north_ll, stopOnError = FALSE)) {
+    v_north_ll <- resample(v_north_ll, u_east_ll, method = "bilinear")
+  }
+  u_east <- as.matrix(u_east_ll, wide = TRUE)
+  v_north <- as.matrix(v_north_ll, wide = TRUE)
+  velocity_keep <- is.finite(u_east) & is.finite(v_north) &
+    sqrt(u_east^2 + v_north^2) >= current_speed_floor
+  u_east[!velocity_keep] <- NA_real_
+  v_north[!velocity_keep] <- NA_real_
+  current_public_cell_count <- sum(velocity_keep)
+  current_public_grid_shape <- paste(nrow(u_east), "x", ncol(u_east))
+  particle_count <- if (current_public_cell_count) {
+    min(900L, max(250L, as.integer(floor(current_public_cell_count / 75))))
+  } else {
+    0L
+  }
+  option2_data <- list(
+    bounds = current_bounds,
+    outline = outline_latlng,
+    source = source_latlng,
+    buoy = buoy_latlng,
+    label = paste(current_label, paste0("Model time: ", current_time_label),
+                  paste0("Public vector grid: ", public_grid_tag),
+                  "Particle speed is visually accelerated; directions use the simulated mean field.",
+                  sep = "\n"),
+    debug = paste(debug_prefix, "Option 2 public grid:", current_public_grid_shape,
+                  "Option 2 finite vector cells:", current_public_cell_count,
+                  sep = "\n"),
+    field = list(
+      west = xmin(u_east_ll), south = ymin(u_east_ll),
+      east = xmax(u_east_ll), north = ymax(u_east_ll),
+      nrows = nrow(u_east), ncols = ncol(u_east),
+      uEast = as.vector(t(u_east)), vNorth = as.vector(t(v_north)),
+      particleCount = particle_count, visualSpeedMultiplier = 300
+    )
+  )
+  option2_js <- paste0(
+    "function(el, x, data) {",
+    "var map=this,field=data.field,bounds=L.latLngBounds(data.bounds);",
+    "var osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);",
+    "var satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri'});",
+    "var grid=L.polyline(data.outline,{color:'black',weight:2}),paddle=L.polyline(data.source,{color:'dodgerblue',weight:2,dashArray:'6 6'}),buoy=L.circleMarker(data.buoy,{radius:5,color:'red',fillOpacity:1});",
+    "grid.addTo(map);paddle.addTo(map);buoy.addTo(map);map.fitBounds(bounds,{padding:[4,4]});map.setMaxBounds(bounds);",
+    "function number(v){return typeof v==='number'&&Number.isFinite(v);}",
+    "function cellOK(row,col){var a=row*field.ncols+col,b=a+1,c=a+field.ncols,d=c+1;return number(field.uEast[a])&&number(field.uEast[b])&&number(field.uEast[c])&&number(field.uEast[d])&&number(field.vNorth[a])&&number(field.vNorth[b])&&number(field.vNorth[c])&&number(field.vNorth[d]);}",
+    "function sample(lat,lng){var gx=(lng-field.west)/(field.east-field.west)*(field.ncols-1),gy=(field.north-lat)/(field.north-field.south)*(field.nrows-1);if(!number(gx)||!number(gy)||gx<0||gy<0||gx>=field.ncols-1||gy>=field.nrows-1)return null;var col=Math.floor(gx),row=Math.floor(gy),fx=gx-col,fy=gy-row;if(!cellOK(row,col))return null;var a=row*field.ncols+col,b=a+1,c=a+field.ncols,d=c+1;var interp=function(values){return values[a]*(1-fx)*(1-fy)+values[b]*fx*(1-fy)+values[c]*(1-fx)*fy+values[d]*fx*fy;};return {east:interp(field.uEast),north:interp(field.vNorth)};}",
+    "var validCells=[];for(var row=0;row<field.nrows-1;row++){for(var col=0;col<field.ncols-1;col++){if(cellOK(row,col))validCells.push([row,col]);}}",
+    "function resetParticle(p){if(!validCells.length)return false;var q=validCells[Math.floor(Math.random()*validCells.length)];p.lat=field.north-(q[0]+Math.random())/(field.nrows-1)*(field.north-field.south);p.lng=field.west+(q[1]+Math.random())/(field.ncols-1)*(field.east-field.west);p.trail=[[p.lat,p.lng]];return true;}",
+    "function moveParticle(p,dt){var velocity=sample(p.lat,p.lng);if(!velocity)return false;var seconds=dt*field.visualSpeedMultiplier,nextLat=p.lat+velocity.north*seconds/110540,nextLng=p.lng+velocity.east*seconds/(111320*Math.cos(p.lat*Math.PI/180));if(!sample(nextLat,nextLng))return false;p.lat=nextLat;p.lng=nextLng;p.trail.push([p.lat,p.lng]);if(p.trail.length>7)p.trail.shift();return true;}",
+    "var ParticleFlow=L.Layer.extend({initialize:function(){this._particles=[];this._running=false;},onAdd:function(m){this._map=m;this._canvas=L.DomUtil.create('canvas','leaflet-zoom-animated',m.getPanes().overlayPane);this._canvas.style.pointerEvents='none';this._canvas.style.zIndex=450;this._resize();this._particles=[];for(var i=0;i<field.particleCount;i++){var p={trail:[]};if(resetParticle(p))this._particles.push(p);}m.on('resize moveend zoomend',this._resize,this);this._running=true;this._last=0;this._frame=window.requestAnimationFrame(this._animate.bind(this));},onRemove:function(m){this._running=false;window.cancelAnimationFrame(this._frame);m.off('resize moveend zoomend',this._resize,this);L.DomUtil.remove(this._canvas);this._map=null;},_resize:function(){if(!this._map||!this._canvas)return;var size=this._map.getSize(),dpr=window.devicePixelRatio||1;this._canvas.width=Math.max(1,Math.round(size.x*dpr));this._canvas.height=Math.max(1,Math.round(size.y*dpr));this._canvas.style.width=size.x+'px';this._canvas.style.height=size.y+'px';this._topLeft=this._map.containerPointToLayerPoint([0,0]);L.DomUtil.setPosition(this._canvas,this._topLeft);this._ctx=this._canvas.getContext('2d');this._ctx.setTransform(dpr,0,0,dpr,0,0);},_animate:function(timestamp){if(!this._running)return;var dt=this._last?Math.min(0.05,(timestamp-this._last)/1000):0.016;this._last=timestamp;var ctx=this._ctx,size=this._map.getSize();ctx.clearRect(0,0,size.x,size.y);ctx.strokeStyle='rgba(8,48,107,0.68)';ctx.lineWidth=1.15;ctx.lineCap='round';for(var i=0;i<this._particles.length;i++){var p=this._particles[i];if(!moveParticle(p,dt)){resetParticle(p);continue;}if(p.trail.length<2)continue;ctx.beginPath();for(var j=0;j<p.trail.length;j++){var point=this._map.latLngToLayerPoint(p.trail[j]),px=point.x-this._topLeft.x,py=point.y-this._topLeft.y;if(j===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}ctx.stroke();}this._frame=window.requestAnimationFrame(this._animate.bind(this));}});",
+    "var particleFlow=new ParticleFlow();particleFlow.addTo(map);",
+    "L.control.layers({'OpenStreetMap':osm,'Satellite imagery':satellite},{'Option 2 particle current field':particleFlow,'FUNWAVE grid':grid,'Internal wavemaker':paddle,'Buoy':buoy},{collapsed:false}).addTo(map);",
+    "function panel(position,text){var c=L.control({position:position});c.onAdd=function(){var d=L.DomUtil.create('div');d.style.background='rgba(255,255,255,.92)';d.style.padding='6px';d.style.font='12px Arial';d.style.whiteSpace='pre-line';d.textContent=text;return d;};c.addTo(map);}",
+    "panel('bottomleft',data.label);panel('topright',data.debug);",
+    "window.setTimeout(function(){map.invalidateSize();map.fitBounds(bounds,{padding:[4,4]});},250);",
+    "}"
+  )
+  option2_widget <- leaflet::leaflet(
+    width = "100%", height = 620,
+    options = leaflet::leafletOptions(minZoom = 14, maxZoom = 18, maxBoundsViscosity = 1)
+  )
+  option2_widget <- htmlwidgets::onRender(option2_widget, option2_js, data = option2_data)
+  htmlwidgets::saveWidget(
+    option2_widget,
+    file.path(site_assets_dir, "port-fairy-current-particles.html"),
+    selfcontained = FALSE
+  )
+  current_particle_map_url <- "assets/port-fairy-current-particles.html"
 }
+
+current_debug <- data.frame(
+  Diagnostic = c("U field files found", "V field files found", "Paired U/V field files",
+                 "Selected file number(s)", "Current field used", "Model time represented",
+                 "Peak vector speed (m/s)", "Trace / particle floor (m/s)",
+                 "Option 1 seeds", "Option 1 completed paths",
+                 paste0("Option 2 public vector grid (", public_grid_tag, ")"),
+                 "Option 2 finite vector cells"),
+  Value = c(length(u_paths), length(v_paths), length(common_current_numbers),
+            current_selected_files, current_label, current_time_label,
+            ifelse(is.finite(current_peak_speed), format(round(current_peak_speed, 3), nsmall = 3), "n/a"),
+            ifelse(is.finite(current_speed_floor), format(round(current_speed_floor, 3), nsmall = 3), "n/a"),
+            current_seed_count, current_streamline_count,
+            current_public_grid_shape, current_public_cell_count),
+  check.names = FALSE, stringsAsFactors = FALSE
+)
 
 # A single fixed range makes every eta frame and map comparable across days.
 eta_animation_limits <- eta_display_limits
@@ -722,8 +923,7 @@ full_gif_url <- "assets/port-fairy-full.gif"
 final_sixth_gif_url <- "assets/port-fairy-final-sixth.gif"
 
 draw_eta_frame <- function(k) {
-  r_om <- model_to_rotated_raster(eta_frames[[k]], basename(eta_paths[k]))
-  r_om <- apply_output_visibility_mask_rotated(r_om)
+  r_om <- eta_public_frames[[k]]
   r_ll <- project(r_om, "EPSG:4326", method = "bilinear")
   r_ll <- apply_water_masks_wgs84(r_ll)
   plot_geographic(r_ll,
@@ -766,13 +966,14 @@ cat('<style>
 
 ## Interpretation first
 
-This is a `r sprintf("%.0f m", grid$dx_m[1])`, `r simulation_label` grid and
-forcing diagnostic—not a validated harbour
-forecast. Each raw FUNWAVE text field is first rebuilt on the exact rotated
-Oblique Mercator grid, DEM-masked to water cells, and masked seaward of the
-internal wavemaker, then reprojected to WGS84
-for geographic plotting. The interactive maps are limited to the local model
-extent and use a compact display height.
+This is a `r paste0(metres_label(grid$dx_m[1]), " m")`, `r simulation_label`
+grid and forcing diagnostic—not a validated harbour forecast. Each raw
+FUNWAVE text field is first rebuilt on the exact rotated Oblique Mercator grid,
+DEM-masked to water cells, and masked seaward of the internal wavemaker. The
+historical workflow aggregates report maps, animations, GeoTIFFs and displayed
+velocity fields to `r paste0(public_grid_tag, " cells")` in that rotated CRS,
+then reprojects them to WGS84 for geographic display. The interactive maps are
+limited to the local model extent and use a compact display height.
 
 Live report: <https://julianog.github.io/run_surf_wave_forecast/>. Source:
 <https://github.com/JulianOG/run_surf_wave_forecast>.
@@ -866,8 +1067,7 @@ seeing crest reach, but it is **not** a wave-height statistic.
 if (is.null(eta_max)) {
   plot.new(); text(0.5, 0.5, "No eta output was produced.")
 } else {
-  eta_max_rotated <- model_to_rotated_raster(eta_max, "eta maximum")
-  eta_max_wgs84 <- write_model_output_rasters(eta_max_rotated, "eta_max")
+  eta_max_wgs84 <- write_model_output_rasters(eta_max, "eta_max", already_public = TRUE)
   eta_max_wgs84 <- apply_water_masks_wgs84(eta_max_wgs84)
   writeRaster(eta_max_wgs84, file.path(case_dir, "eta_max_wgs84.tif"), overwrite = TRUE)
   leaflet_model_map(eta_max_wgs84, ygnbu_palette,
@@ -885,8 +1085,7 @@ the saved mean-wave outputs, rather than a maximum of individual `eta` frames.
 if (is.null(hsig_max)) {
   plot.new(); text(0.5, 0.5, "No Hsig output was produced. Check STEADY_TIME and T_INTV_mean.")
 } else {
-  hsig_max_rotated <- model_to_rotated_raster(hsig_max, "Hsig maximum")
-  hsig_max_wgs84 <- write_model_output_rasters(hsig_max_rotated, "hsig_max")
+  hsig_max_wgs84 <- write_model_output_rasters(hsig_max, "hsig_max", already_public = TRUE)
   hsig_max_wgs84 <- apply_water_masks_wgs84(hsig_max_wgs84)
   writeRaster(hsig_max_wgs84, file.path(case_dir, "hsig_max_wgs84.tif"), overwrite = TRUE)
   leaflet_model_map(hsig_max_wgs84, ygnbu_palette,
@@ -930,21 +1129,45 @@ if (!nrow(station_timeseries)) {
 }
 ```
 
-## Animated flow streamlines
+## Animated current particles
 
-This map traces native FUNWAVE depth-averaged `u` and `v` fields over the final
-60 seconds. If the phase-resolved snapshots cancel in the mean, it uses the
-final saved velocity field instead. Moving dots travel along the streamlines;
-the map has OpenStreetMap and satellite basemaps, with the flow layer
-switchable.
+This earth.nullschool-style map advects particles through the final 60-second
+mean of FUNWAVE's depth-averaged velocity field. If that mean is too weak, it
+uses the final saved velocity snapshot and labels it accordingly. Raw FUNWAVE
+`u` and `v` are components along the rotated model axes, so the report first
+rotates them to geographic east/north using the true x/y bearings recorded in
+`grid_metadata.csv`, then aggregates and projects the vectors for display.
+Particle speed is visually accelerated only; particle direction and spatial
+variation come from the simulated vector field. OpenStreetMap and satellite
+imagery are switchable without an API key.
 
-```{r current-streamlines, echo=FALSE}
-if (is.null(current_map_url)) {
+```{r current-particles, echo=FALSE}
+if (is.null(current_particle_map_url)) {
   plot.new(); text(0.5, 0.5, "No paired u/v output was produced for the current map.")
 } else {
   htmltools::tags$iframe(
-    src = current_map_url, width = "100%", height = "620",
+    src = current_particle_map_url, width = "100%", height = "620",
     style = "border: 1px solid #dfe6e9; display: block;"
+  )
+}
+```
+
+## Streamline diagnostic
+
+Option 1 is retained as a separate, inspectable streamline diagnostic. The
+table exposes the U/V files, selected model times, velocity threshold, seed
+count, and completed-path count so an empty result can be diagnosed rather
+than silently displayed as a blank map.
+
+```{r current-streamline-diagnostic, echo=FALSE}
+report_table(current_debug)
+if (!is.null(current_streamline_debug_url)) {
+  htmltools::tags$details(
+    htmltools::tags$summary("Show option 1 streamline diagnostic"),
+    htmltools::tags$iframe(
+      src = current_streamline_debug_url, width = "100%", height = "560",
+      style = "border: 1px solid #dfe6e9; display: block; margin-top: 0.7rem;"
+    )
   )
 }
 ```

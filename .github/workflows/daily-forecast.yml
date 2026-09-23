@@ -131,6 +131,30 @@ jobs:
         run: |
           Rscript -e 'for (pkg in c("gifski", "htmltools", "htmlwidgets", "leaflet", "ncdf4", "plotly", "RColorBrewer", "rmarkdown", "terra")) stopifnot(requireNamespace(pkg, quietly = TRUE))'
 
+      - name: Download Portland hourly tide data
+        shell: bash
+        run: |
+          mkdir -p port_fairy/data
+          tide_file="port_fairy/data/UHSLC_h129_Portland_hourly.csv"
+          temporary_file="${tide_file}.download"
+          rm -f "$temporary_file"
+          if curl --fail --location --retry 5 --retry-all-errors --retry-delay 3 \
+            --retry-max-time 600 --connect-timeout 30 --max-time 180 \
+            --user-agent "Port-Fairy-FUNWAVE-GitHub-Actions/1.0" \
+            --output "$temporary_file" \
+            "https://uhslc.soest.hawaii.edu/data/csv/fast/hourly/h129.csv"; then
+            if [ "$(wc -c < "$temporary_file")" -gt 1000 ]; then
+              mv "$temporary_file" "$tide_file"
+              echo "Downloaded Portland hourly tide data."
+            else
+              rm -f "$temporary_file"
+              echo "::warning::Downloaded Portland tide file was too small; using the transparent zero-AHD fallback."
+            fi
+          else
+            rm -f "$temporary_file"
+            echo "::warning::Could not download Portland tide data; using the transparent zero-AHD fallback."
+          fi
+
       - name: Build the rotated Port Fairy case from bathymetry and buoy data
         run: |
           Rscript port_fairy/setup_port_fairy_funwave.R

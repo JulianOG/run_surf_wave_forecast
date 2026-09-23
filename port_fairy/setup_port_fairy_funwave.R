@@ -1,7 +1,8 @@
 #!/usr/bin/env Rscript
 
-# Build a 5 m, 10-minute FUNWAVE-TVD resolution sensitivity for Port Fairy
-# from the Victorian DEM and the newest usable Spotter observation.
+# Build a Port Fairy FUNWAVE-TVD case from the Victorian DEM and the newest
+# usable Spotter observation. The daily workflow uses a 5 m model grid; the
+# historical workflow can request a 2.5 m model grid through its environment.
 #
 # The model uses an Oblique Mercator grid. Its +x direction is perpendicular to
 # the long buoy-side model boundary, pointing from that edge toward the coast.
@@ -102,12 +103,29 @@ domain_corners_ll <- rbind(
 # travel direction.  A fixed coast-normal grid forced with an oblique sea state
 # lets much of the energy meet a lateral boundary before reaching the local
 # coast; this is a geometry issue, not a reason to remove the source sponge.
-dx <- 5                          # metres
+read_positive_setting <- function(name, default) {
+  value <- suppressWarnings(as.numeric(Sys.getenv(name, unset = as.character(default))))
+  if (!is.finite(value) || value <= 0) {
+    stop(name, " must be a positive number of metres.")
+  }
+  value
+}
+metres_label <- function(x) sub("\\.?0+$", "", format(x, trim = TRUE, scientific = FALSE))
+
+# FUNWAVE always writes its native-grid fields. `public_output_dx_m` controls
+# only the subsequent report/export aggregation, keeping Pages assets compact
+# without coarsening the numerical simulation itself.
+dx <- read_positive_setting("PORT_FAIRY_DX_M", 5)
+public_output_dx_m <- read_positive_setting("PORT_FAIRY_PUBLIC_OUTPUT_DX_M", 10)
+public_output_factor <- public_output_dx_m / dx
+if (public_output_factor < 1 || abs(public_output_factor - round(public_output_factor)) > 1e-8) {
+  stop("PORT_FAIRY_PUBLIC_OUTPUT_DX_M must be an integer multiple of PORT_FAIRY_DX_M.")
+}
 total_time <- 600                # seconds = 10 minutes
 plot_intv <- 15                  # seconds; 40 snapshots including the initial frame
 mean_wave_interval <- 200        # seconds
 steady_time <- 100               # seconds; leaves two complete mean-wave windows
-grid_tag <- paste0(sprintf("%.0f", dx), "m")
+grid_tag <- paste0(metres_label(dx), "m")
 
 # ----- Latest good / not-yet-evaluated buoy observation --------------------
 nc <- nc_open(buoy_file)
@@ -178,78 +196,71 @@ if (historical_run) {
 }
 
 # ----- Portland hourly water level -----------------------------------------
-# UHSLC fast-delivery data are UTC hourly values in millimetres.  Portland's
-# supplied tidal-datum sheet states that LAT is 0.597 m below AHD, so this
-# workflow assumes the CSV values are LAT and uses: water level AHD (m) = water
-# level LAT (m) - 0.597. It is a static still-water level for this short FUNWAVE run, applied
-# throughout the domain (and therefore at the offshore boundary), not an
-# additional wave-paddle signal.
-download_portland_water_level <- function(data_dir) {
-  url <- "https://uhslc.soest.hawaii.edu/data/csv/fast/hourly/h129.csv"
-  destination <- file.path(data_dir, "UHSLC_h129_Portland_hourly.csv")
-  if (file.exists(destination) && file.info(destination)$size > 1000) return(destination)
-  temporary <- paste0(destination, ".download")
-  old_timeout <- getOption("timeout")
-  on.exit(options(timeout = old_timeout), add = TRUE)
-  options(timeout = min(max(old_timeout, 30), 45))
-  status <- tryCatch(
-    suppressWarnings(utils::download.file(
-      url, temporary, mode = "wb", method = "libcurl", quiet = TRUE
-    )),
-    error = function(e) 1L
-  )
-  if (isTRUE(status == 0) && file.exists(temporary) && file.info(temporary)$size > 1000) {
-    if (file.exists(destination)) unlink(destination)
-    if (file.rename(temporary, destination)) return(destination)
-  }
-  if (file.exists(temporary)) unlink(temporary)
+# UHSLC fast-delivery data are UTC hourly values in millimetres. The Actions
+# workflow downloads this file before this script begins, avoiding a long R
+# download timeout during case construction. Portland's supplied tidal-datum
+# sheet states that LAT is 0.597 m below AHD, so this workflow assumes CSV
+# values are LAT and uses: water level AHD (m) = water level LAT (m) - 0.597.
+# It is a static still-water level for this short FUNWAVE run, applied across
+# the domain (and therefore at the offshore boundary), not a paddle signal.
+portland_file <- file.path(data_dir, "UHSLC_h129_Portland_hourly.csv")
+if (!file.exists(portland_file) || file.info(portland_file)$size <= 1000) {
   warning(
-    "Could not download Portland hourly water levels from UHSLC; ",
+    "The pre-downloaded Portland UHSLC CSV is unavailable; ",
     "continuing with a 0.000 m AHD still-water level."
   )
-  NULL
+  portland_file <- NULL
 }
-
-portland_file <- download_portland_water_level(data_dir)
 portland_to_ahd_offset_m <- -0.597
 portland_reference_datum <- "LAT assumed; Portland observation unavailable"
 portland_water_level_lat_m <- NA_real_
 portland_water_level_ahd_m <- 0
 portland_time_forcing <- as.POSIXct(NA, tz = "UTC")
 if (!is.null(portland_file)) {
-  portland <- utils::read.csv(
-    portland_file, header = FALSE,
-    col.names = c("year", "month", "day", "hour", "level_mm")
+  portland <- tryCatch(
+    utils::read.csv(
+      portland_file, header = FALSE,
+      col.names = c("year", "month", "day", "hour", "level_mm"),
+      colClasses = rep("numeric", 5)
+    ),
+    error = function(e) NULL
   )
-  portland$time_utc <- as.POSIXct(
-    sprintf("%04d-%02d-%02d %02d:00:00", portland$year, portland$month,
-            portland$day, portland$hour), tz = "UTC"
-  )
-  portland$level_mm[portland$level_mm <= -9990] <- NA_real_
-  target_time <- time_utc[i]
-  portland_valid <- which(is.finite(portland$level_mm))
-  nearest_portland <- if (length(portland_valid)) {
-    portland_valid[which.min(abs(difftime(
-      portland$time_utc[portland_valid], target_time, units = "secs"
-    )))]
-  } else {
-    NA_integer_
-  }
-  portland_gap_minutes <- if (is.na(nearest_portland)) Inf else abs(as.numeric(difftime(
-    portland$time_utc[nearest_portland], target_time, units = "mins"
-  )))
-  if (is.finite(portland_gap_minutes) && portland_gap_minutes <= 90) {
-    portland_reference_datum <- "LAT (assumed from Portland tidal datum sheet)"
-    portland_water_level_lat_m <- portland$level_mm[nearest_portland] / 1000
-    portland_water_level_ahd_m <- portland_water_level_lat_m + portland_to_ahd_offset_m
-    portland_time_forcing <- portland$time_utc[nearest_portland]
-    message(sprintf("Portland water level: %.3f m LAT = %.3f m AHD",
-                    portland_water_level_lat_m, portland_water_level_ahd_m))
-  } else {
+  if (is.null(portland) || !nrow(portland)) {
     warning(
-      "No contemporaneous Portland water level is available; ",
+      "The pre-downloaded Portland UHSLC CSV could not be parsed; ",
       "continuing with a 0.000 m AHD still-water level."
     )
+  } else {
+    portland$time_utc <- as.POSIXct(
+      sprintf("%04.0f-%02.0f-%02.0f %02.0f:00:00", portland$year, portland$month,
+              portland$day, portland$hour), tz = "UTC"
+    )
+    portland$level_mm[portland$level_mm <= -9990] <- NA_real_
+    target_time <- time_utc[i]
+    portland_valid <- which(is.finite(portland$level_mm))
+    nearest_portland <- if (length(portland_valid)) {
+      portland_valid[which.min(abs(difftime(
+        portland$time_utc[portland_valid], target_time, units = "secs"
+      )))]
+    } else {
+      NA_integer_
+    }
+    portland_gap_minutes <- if (is.na(nearest_portland)) Inf else abs(as.numeric(difftime(
+      portland$time_utc[nearest_portland], target_time, units = "mins"
+    )))
+    if (is.finite(portland_gap_minutes) && portland_gap_minutes <= 90) {
+      portland_reference_datum <- "LAT (assumed from Portland tidal datum sheet)"
+      portland_water_level_lat_m <- portland$level_mm[nearest_portland] / 1000
+      portland_water_level_ahd_m <- portland_water_level_lat_m + portland_to_ahd_offset_m
+      portland_time_forcing <- portland$time_utc[nearest_portland]
+      message(sprintf("Portland water level: %.3f m LAT = %.3f m AHD",
+                      portland_water_level_lat_m, portland_water_level_ahd_m))
+    } else {
+      warning(
+        "No contemporaneous Portland water level is available; ",
+        "continuing with a 0.000 m AHD still-water level."
+      )
+    }
   }
 }
 
@@ -537,7 +548,7 @@ y_wk <- (nglob - 1) * dx / 2
 ywidth_wk <- nglob * dx
 
 input <- c(
-  "! Port Fairy: 5 m, 10-minute FUNWAVE-TVD resolution sensitivity",
+  paste0("! Port Fairy: ", metres_label(dx), " m, 10-minute FUNWAVE-TVD case"),
   "! Generated by port_fairy/setup_port_fairy_funwave.R",
   paste0("TITLE = Port_Fairy_latest_buoy_", sprintf("%.0f", total_time / 60), "min"),
   "PX = 2", "PY = 1",
@@ -605,7 +616,8 @@ grid_info <- data.frame(
   inward_source_component = cos(theta_peak * pi / 180),
   xmin_m = xmin(template), xmax_m = xmax(template),
   ymin_m = ymin(template), ymax_m = ymax(template),
-  dx_m = dx, dy_m = dx, Mglob = mglob, Nglob = nglob,
+  dx_m = dx, dy_m = dx, public_output_dx_m = public_output_dx_m,
+  Mglob = mglob, Nglob = nglob,
   mpi_px = 2, mpi_py = 1, mpi_ranks = 2,
   station_count = nrow(station_info),
   total_time_s = total_time, plot_intv_s = plot_intv,
@@ -617,7 +629,8 @@ write.csv(grid_info, file.path(out_dir, "grid_metadata.csv"), row.names = FALSE)
 message("Created FUNWAVE case in: ", out_dir)
 message("Latest buoy forcing: Hs=", round(hs[i], 2), " m, Tp=", round(tp[i], 1),
         " s, from=", round(dir_from[i]), " degrees, at ", forcing$time_utc)
-message("Grid: ", mglob, " x ", nglob, " at ", dx, " m")
+message("Grid: ", mglob, " x ", nglob, " at ", metres_label(dx),
+        " m; public report/export resolution: ", metres_label(public_output_dx_m), " m")
 message("Wavemaker: Xc_WK=", round(x_wk, 1), " m; ",
         round(source_envelope_width_m, 1), " m active Gaussian envelope (",
         round(source_envelope_cells, 1), " cells); Lp=", round(peak_wavelength_m, 1),
