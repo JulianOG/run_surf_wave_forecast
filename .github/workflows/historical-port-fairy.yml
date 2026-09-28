@@ -173,17 +173,17 @@ jobs:
         run: |
           docker run --rm --user root -v "$PWD/port_fairy/output:/work" "${{ needs.ensure-image.outputs.image }}" \
             -lc 'mkdir -p results && echo "Container CPUs: $(nproc)" && mpirun --allow-run-as-root -np 2 funwave input.txt'
-      - name: Verify FUNWAVE U/V current outputs
+      - name: Verify FUNWAVE mean-current outputs
         shell: bash
         run: |
           set -euo pipefail
           results_dir="port_fairy/output/results"
-          for field in u v; do
-            count="$(find "$results_dir" -maxdepth 1 -type f -regextype posix-extended -regex ".*/${field}_[0-9]{5}" | wc -l)"
+          for field in umean vmean; do
+            count="$(find "$results_dir" -maxdepth 1 -type f -regextype posix-extended -iregex ".*/${field}_[0-9]{5}" | wc -l)"
             echo "${field} fields: ${count}"
-            find "$results_dir" -maxdepth 1 -type f -regextype posix-extended -regex ".*/${field}_[0-9]{5}" -printf '%f\n' | sort | tail -5
+            find "$results_dir" -maxdepth 1 -type f -regextype posix-extended -iregex ".*/${field}_[0-9]{5}" -printf '%f\n' | sort | tail -5
             if [ "$count" -eq 0 ]; then
-              echo "::error::FUNWAVE did not write ${field}_##### current fields."
+              echo "::error::FUNWAVE did not write ${field}_##### current fields. Check the corresponding output flag in input.txt."
               exit 1
             fi
           done
@@ -197,6 +197,7 @@ jobs:
           printf '%s\n' '${{ matrix.observation_local }}' > "$PORT_FAIRY_SITE_DIR/requested-local-time.txt"
           printf '%s\n' '${{ matrix.observation_utc }}' > "$PORT_FAIRY_SITE_DIR/requested-utc-time.txt"
           test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-flow-particles.html"
+          test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-earth-nullschool-flow.html"
           if [ -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-current-streamline-diagnostic.html" ]; then
             echo "Option 1 streamline diagnostic page published."
           else

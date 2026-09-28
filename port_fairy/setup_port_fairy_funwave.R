@@ -596,7 +596,10 @@ input <- c(
   sprintf("Sponge_north_width = %.1f", lateral_sponge_width),
   "Cd = 0.002", "CFL = 0.5", "FroudeCap = 1.0", "MinDepth = 0.05",
   "VISCOSITY_BREAKING = T", "Cbrk1 = 0.65", "Cbrk2 = 0.35",
-  "DEPTH_OUT = T", "U = T", "V = T", "ETA = T", "Hmax = T",
+  # The public current pages use time-mean currents. Do not write
+  # phase-resolved U/V snapshots: they are wave-orbital velocities, not the
+  # persistent current displayed by the streamline/particle products.
+  "DEPTH_OUT = T", "Umean = T", "Vmean = T", "ETA = T", "Hmax = T",
   "WaveHeight = T", "MASK = T",
   sprintf("NumberStations = %d", nrow(station_info)), "STATIONS_FILE = stations.txt"
 )
