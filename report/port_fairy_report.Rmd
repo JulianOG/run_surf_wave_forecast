@@ -17,6 +17,18 @@ suppressPackageStartupMessages({
   library(leaflet)
 })
 
+# This JavaScript library is vendored with the report rather than loaded from
+# a CDN, so the standalone current page has no third-party runtime dependency.
+# It is attached only to the Leaflet.Velocity page below; it adds no R package.
+leaflet_velocity_vendor_dir <- normalizePath("vendor", mustWork = TRUE)
+leaflet_velocity_dependency <- htmltools::htmlDependency(
+  name = "leaflet-velocity",
+  version = "2.1.4-port-fairy",
+  src = c(file = leaflet_velocity_vendor_dir),
+  script = "leaflet-velocity-2.1.4-port-fairy.js",
+  stylesheet = "leaflet-velocity-2.1.4.css"
+)
+
 case_dir <- normalizePath("../port_fairy/output", mustWork = TRUE)
 # The normal forecast writes support files under site/assets. Historical runs
 # set PORT_FAIRY_SITE_DIR to an isolated report folder so their maps/assets do
@@ -1202,6 +1214,220 @@ earth_flow_debug <- data.frame(
   check.names = FALSE, stringsAsFactors = FALSE
 )
 
+# -------------------------------------------------------------------------
+# Additional Leaflet.Velocity current animation
+#
+# This intentionally adds a fourth current page. It uses the maintained
+# Leaflet.Velocity renderer with the same masked, time-mean Umean/Vmean record
+# as the other current pages. Unlike the native-grid path diagnostic, this
+# renderer needs a regular latitude/longitude grid and true east/north vector
+# components, so they are prepared here solely for browser display.
+leaflet_velocity_page_path <- file.path(site_assets_dir, "port-fairy-leaflet-velocity.html")
+leaflet_velocity_page_url <- "assets/port-fairy-leaflet-velocity.html"
+leaflet_velocity_page_status <- "No paired Umean/Vmean output was produced."
+leaflet_velocity_selected_files <- "none"
+leaflet_velocity_grid <- "n/a"
+leaflet_velocity_peak_speed <- NA_real_
+
+model_xy_bearing_radians <- function(a_ll, b_ll) {
+  # The domain is small enough for this local tangent-plane calculation. The
+  # result is a true bearing clockwise from north, in radians.
+  east <- (b_ll[1] - a_ll[1]) * cos(mean(c(a_ll[2], b_ll[2])) * pi / 180)
+  north <- b_ll[2] - a_ll[2]
+  atan2(east, north)
+}
+
+model_components_to_true_en <- function(u_model, v_model) {
+  centre <- c(
+    (grid$Mglob[1] - 1) * grid$dx_m[1] / 2,
+    (grid$Nglob[1] - 1) * grid$dy_m[1] / 2
+  )
+  local_axes_ll <- model_xy_to_wgs84(rbind(
+    centre,
+    centre + c(grid$dx_m[1], 0),
+    centre + c(0, grid$dy_m[1])
+  ))
+  x_bearing <- model_xy_bearing_radians(local_axes_ll[1, ], local_axes_ll[2, ])
+  y_bearing <- model_xy_bearing_radians(local_axes_ll[1, ], local_axes_ll[3, ])
+  list(
+    east = u_model * sin(x_bearing) + v_model * sin(y_bearing),
+    north = u_model * cos(x_bearing) + v_model * cos(y_bearing),
+    x_bearing_deg = (x_bearing * 180 / pi) %% 360,
+    y_bearing_deg = (y_bearing * 180 / pi) %% 360
+  )
+}
+
+leaflet_velocity_values <- function(r) {
+  # terra matrix rows run north to south and columns west to east, matching
+  # Leaflet.Velocity's GRIB-style regular lat/lon data ordering.
+  as.numeric(t(terra::as.matrix(r, wide = TRUE)))
+}
+
+if (length(earth_common_numbers)) {
+  leaflet_velocity_number <- tail(earth_common_numbers, 1)
+  leaflet_velocity_selected_files <- paste0(
+    "Umean_", sprintf("%05d", leaflet_velocity_number),
+    ", Vmean_", sprintf("%05d", leaflet_velocity_number)
+  )
+  umean_path <- earth_u_paths[match(leaflet_velocity_number, earth_u_numbers)]
+  vmean_path <- earth_v_paths[match(leaflet_velocity_number, earth_v_numbers)]
+  umean_model <- apply_output_visibility_mask_model(
+    read_text_model(umean_path, basename(umean_path))
+  )
+  vmean_model <- apply_output_visibility_mask_model(
+    read_text_model(vmean_path, basename(vmean_path))
+  )
+  true_components <- model_components_to_true_en(umean_model, vmean_model)
+
+  u_east_om <- make_public_output_rotated(
+    model_to_rotated_raster(true_components$east, basename(umean_path))
+  )
+  v_north_om <- make_public_output_rotated(
+    model_to_rotated_raster(true_components$north, basename(vmean_path))
+  )
+  u_east_ll <- apply_water_masks_wgs84(project(u_east_om, "EPSG:4326", method = "bilinear"))
+  v_north_ll <- apply_water_masks_wgs84(project(v_north_om, "EPSG:4326", method = "bilinear"))
+  if (!compareGeom(u_east_ll, v_north_ll, stopOnError = FALSE)) {
+    stop("Leaflet.Velocity U and V geographic grids do not have matching geometry.")
+  }
+
+  u_values <- leaflet_velocity_values(u_east_ll)
+  v_values <- leaflet_velocity_values(v_north_ll)
+  velocity_ok <- is.finite(u_values) & is.finite(v_values)
+  velocity_speed <- sqrt(u_values[velocity_ok]^2 + v_values[velocity_ok]^2)
+  leaflet_velocity_peak_speed <- if (length(velocity_speed)) max(velocity_speed) else NA_real_
+  leaflet_velocity_grid <- paste0(
+    ncol(u_east_ll), " x ", nrow(u_east_ll), " regular WGS84 cells (",
+    format(xres(u_east_ll), digits = 5, trim = TRUE), "° x ",
+    format(yres(u_east_ll), digits = 5, trim = TRUE), "°)"
+  )
+  ref_time <- paste0(
+    gsub(" ", "T", sub(" UTC$", "", forcing$time_utc[1], fixed = FALSE)), "Z"
+  )
+  common_header <- list(
+    parameterCategory = 2, parameterUnit = "m.s-1",
+    dx = xres(u_east_ll), dy = yres(u_east_ll),
+    la1 = ymax(u_east_ll), la2 = ymin(u_east_ll),
+    lo1 = xmin(u_east_ll), lo2 = xmax(u_east_ll),
+    nx = ncol(u_east_ll), ny = nrow(u_east_ll),
+    refTime = ref_time, forecastTime = 0, gridDefinitionTemplate = 0
+  )
+  velocity_grib <- list(
+    list(
+      header = c(common_header, list(
+        parameterNumber = 2, parameterNumberName = "Eastward mean current"
+      )),
+      data = u_values
+    ),
+    list(
+      header = c(common_header, list(
+        parameterNumber = 3, parameterNumberName = "Northward mean current"
+      )),
+      data = v_values
+    )
+  )
+  velocity_max <- max(0.05, ifelse(is.finite(leaflet_velocity_peak_speed),
+                                    leaflet_velocity_peak_speed, 0.05))
+  velocity_bounds <- earth_bounds
+  velocity_data <- list(
+    bounds = velocity_bounds,
+    outline = earth_outline_latlng,
+    source = earth_source_latlng,
+    buoy = earth_buoy_latlng,
+    data = velocity_grib,
+    max_velocity = velocity_max,
+    selected_files = leaflet_velocity_selected_files,
+    display_grid = leaflet_velocity_grid,
+    model_time_label = paste0(
+      "Latest FUNWAVE Umean/Vmean output; ",
+      metres_label(grid$mean_wave_interval_s[1]), " s averaging interval"
+    ),
+    x_bearing_deg = true_components$x_bearing_deg,
+    y_bearing_deg = true_components$y_bearing_deg
+  )
+  velocity_js <- paste0(
+    "function(el, x, data) {",
+    "var map=this;if(!map||typeof map.getPanes!=='function')map=this.map||this._map;",
+    "if(!map||typeof map.getPanes!=='function'){console.error('Leaflet map was not available for Leaflet.Velocity');return;}",
+    "if(typeof L.velocityLayer!=='function'){console.error('Leaflet.Velocity dependency was not loaded');return;}",
+    "var bounds=L.latLngBounds(data.bounds);",
+    "var osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);",
+    "var satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri'});",
+    "var grid=L.polyline(data.outline,{color:'black',weight:2}),paddle=L.polyline(data.source,{color:'dodgerblue',weight:2,dashArray:'6 6'}),buoy=L.circleMarker(data.buoy,{radius:5,color:'red',fillOpacity:1});",
+    "grid.addTo(map);paddle.addTo(map);buoy.addTo(map);",
+    "var flow=L.velocityLayer({data:data.data,displayValues:true,displayOptions:{velocityType:'Time-mean current',position:'bottomleft',emptyString:'No mean-current data',angleConvention:'bearingCW',showCardinal:true,speedUnit:'ms',directionString:'toward',speedString:'speed'},minVelocity:0,maxVelocity:data.max_velocity,velocityScale:0.08,particleAge:80,particleMultiplier:1/450,frameRate:30,colorScale:['#ffffcc','#c7e9b4','#7fcdbb','#41b6c4','#1d91c0','#225ea8'],opacity:0.92}).addTo(map);",
+    "function panel(position,text){var c=L.control({position:position});c.onAdd=function(){var d=L.DomUtil.create('div','leaflet-control-velocity');d.style.whiteSpace='pre-line';d.textContent=text;return d;};c.addTo(map);return c;}",
+    "panel('topright',data.model_time_label+'\\n'+data.display_grid+'\\nModel x bearing: '+data.x_bearing_deg.toFixed(1)+'°; y bearing: '+data.y_bearing_deg.toFixed(1)+'°');",
+    "L.control.layers({'OpenStreetMap':osm,'Satellite imagery':satellite},{'Leaflet.Velocity mean current':flow,'FUNWAVE grid':grid,'Internal wavemaker':paddle,'Buoy':buoy},{collapsed:false}).addTo(map);",
+    "window.setTimeout(function(){map.invalidateSize();map.fitBounds(bounds,{padding:[4,4]});map.setMaxBounds(bounds);},250);",
+    "}"
+  )
+  leaflet_velocity_widget <- leaflet::leaflet(
+    width = "100%", height = 620,
+    options = leaflet::leafletOptions(minZoom = 14, maxZoom = 18, maxBoundsViscosity = 1)
+  )
+  leaflet_velocity_widget$dependencies <- c(
+    leaflet_velocity_widget$dependencies, list(leaflet_velocity_dependency)
+  )
+  leaflet_velocity_widget <- htmlwidgets::onRender(
+    leaflet_velocity_widget, velocity_js, data = velocity_data
+  )
+  leaflet_velocity_page_status <- tryCatch({
+    htmlwidgets::saveWidget(leaflet_velocity_widget, leaflet_velocity_page_path,
+                            selfcontained = TRUE)
+    if (!file.exists(leaflet_velocity_page_path) ||
+        file.info(leaflet_velocity_page_path)$size < 10000) {
+      stop("The Leaflet.Velocity page was not written or is unexpectedly small.")
+    }
+    paste0("Published from ", leaflet_velocity_selected_files,
+           "; peak true-horizontal mean speed ",
+           format(round(leaflet_velocity_peak_speed, 3), nsmall = 3), " m/s.")
+  }, error = function(e) {
+    paste0("Leaflet.Velocity page write failed: ", conditionMessage(e))
+  })
+}
+
+if (!file.exists(leaflet_velocity_page_path)) {
+  velocity_fallback <- paste(
+    "The Leaflet.Velocity mean-current page could not be animated for this run.",
+    paste0("Paired Umean/Vmean fields: ", length(earth_common_numbers)),
+    paste0("Status: ", leaflet_velocity_page_status),
+    sep = "\n"
+  )
+  tryCatch(
+    htmltools::save_html(
+      htmltools::tags$html(
+        htmltools::tags$head(htmltools::tags$title("Port Fairy Leaflet.Velocity diagnostics")),
+        htmltools::tags$body(
+          style = "font-family: system-ui, sans-serif; max-width: 58rem; margin: 3rem auto; line-height: 1.45;",
+          htmltools::tags$h1("Port Fairy Leaflet.Velocity diagnostics"),
+          htmltools::tags$pre(velocity_fallback)
+        )
+      ),
+      file = leaflet_velocity_page_path
+    ),
+    error = function(e) {
+      leaflet_velocity_page_status <<- paste0(
+        leaflet_velocity_page_status, " Fallback page write failed: ", conditionMessage(e)
+      )
+    }
+  )
+}
+
+leaflet_velocity_debug <- data.frame(
+  Diagnostic = c("Paired Umean/Vmean fields", "Selected file(s)",
+                 "Leaflet.Velocity display grid", "Peak mean speed (m/s)",
+                 "Leaflet.Velocity page"),
+  Value = c(
+    length(earth_common_numbers), leaflet_velocity_selected_files,
+    leaflet_velocity_grid,
+    ifelse(is.finite(leaflet_velocity_peak_speed),
+           format(round(leaflet_velocity_peak_speed, 3), nsmall = 3), "n/a"),
+    leaflet_velocity_page_status
+  ),
+  check.names = FALSE, stringsAsFactors = FALSE
+)
+
 # A single fixed range makes every eta frame and map comparable across days.
 eta_animation_limits <- eta_display_limits
 
@@ -1487,6 +1713,25 @@ htmltools::tags$p(
   )
 )
 report_table(earth_flow_debug)
+```
+
+## Leaflet.Velocity current particles
+
+This additional page uses the [Leaflet.Velocity](https://github.com/onaci/leaflet-velocity)
+particle renderer. It receives the same latest masked `Umean`/`Vmean` field,
+rotated into true eastward/northward components on a regular WGS84 display grid.
+It is a visualisation of the time-mean current field; it does not change the
+model calculation or the exact native-grid station outputs.
+
+```{r leaflet-velocity-current-particles, echo=FALSE}
+htmltools::tags$p(
+  htmltools::tags$a(
+    "Open the Leaflet.Velocity mean-current particle page",
+    href = leaflet_velocity_page_url, target = "_blank",
+    style = "font-size: 1.1rem; font-weight: 600;"
+  )
+)
+report_table(leaflet_velocity_debug)
 ```
 
 ## Streamline diagnostic

@@ -187,6 +187,7 @@ jobs:
           Rscript -e 'rmarkdown::render("report/port_fairy_report.Rmd", output_file="index.html", output_dir="site", quiet=TRUE); rmarkdown::render("report/beach_2d_radiation_plots.Rmd", output_file="beach_test.html", output_dir="site", quiet=TRUE)'
           test -s site/assets/port-fairy-flow-particles.html
           test -s site/assets/port-fairy-earth-nullschool-flow.html
+          test -s site/assets/port-fairy-leaflet-velocity.html
           if [ -s site/assets/port-fairy-current-streamline-diagnostic.html ]; then
             echo "Option 1 streamline diagnostic page published."
           else

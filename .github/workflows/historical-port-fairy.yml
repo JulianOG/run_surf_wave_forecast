@@ -198,6 +198,7 @@ jobs:
           printf '%s\n' '${{ matrix.observation_utc }}' > "$PORT_FAIRY_SITE_DIR/requested-utc-time.txt"
           test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-flow-particles.html"
           test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-earth-nullschool-flow.html"
+          test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-leaflet-velocity.html"
           if [ -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-current-streamline-diagnostic.html" ]; then
             echo "Option 1 streamline diagnostic page published."
           else
