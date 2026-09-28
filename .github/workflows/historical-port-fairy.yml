@@ -161,16 +161,32 @@ jobs:
       - name: Build historical bathymetry and buoy/water-level forcing
         env:
           PORT_FAIRY_OBSERVATION_UTC: ${{ matrix.observation_utc }}
-          # Keep the numerical historical runs at 2.5 m. FUNWAVE writes
-          # native fields at that resolution; the report aggregates published
-          # maps, animations, GeoTIFFs and velocity display to 10 m.
+          # Historical runs use 2.5 m in the cross-shore/wave-propagation
+          # direction (+x) and 10 m alongshore (+y). Daily runs retain their
+          # own unchanged 5 m x 5 m defaults.
           PORT_FAIRY_DX_M: 2.5
+          PORT_FAIRY_DY_M: 10
           PORT_FAIRY_PUBLIC_OUTPUT_DX_M: 10
+          PORT_FAIRY_PUBLIC_OUTPUT_DY_M: 10
         run: Rscript port_fairy/setup_port_fairy_funwave.R
       - name: Run the historical Port Fairy FUNWAVE case
         run: |
           docker run --rm --user root -v "$PWD/port_fairy/output:/work" "${{ needs.ensure-image.outputs.image }}" \
             -lc 'mkdir -p results && echo "Container CPUs: $(nproc)" && mpirun --allow-run-as-root -np 2 funwave input.txt'
+      - name: Verify FUNWAVE U/V current outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          results_dir="port_fairy/output/results"
+          for field in u v; do
+            count="$(find "$results_dir" -maxdepth 1 -type f -regextype posix-extended -regex ".*/${field}_[0-9]{5}" | wc -l)"
+            echo "${field} fields: ${count}"
+            find "$results_dir" -maxdepth 1 -type f -regextype posix-extended -regex ".*/${field}_[0-9]{5}" -printf '%f\n' | sort | tail -5
+            if [ "$count" -eq 0 ]; then
+              echo "::error::FUNWAVE did not write ${field}_##### current fields."
+              exit 1
+            fi
+          done
       - name: Render timestamped historical report
         env:
           PORT_FAIRY_SITE_DIR: historical-reports/${{ matrix.case_id }}
@@ -180,6 +196,12 @@ jobs:
           Rscript -e 'rmarkdown::render("report/port_fairy_report.Rmd", output_file=Sys.getenv("REPORT_FILE"), output_dir=Sys.getenv("PORT_FAIRY_SITE_DIR"), quiet=TRUE)'
           printf '%s\n' '${{ matrix.observation_local }}' > "$PORT_FAIRY_SITE_DIR/requested-local-time.txt"
           printf '%s\n' '${{ matrix.observation_utc }}' > "$PORT_FAIRY_SITE_DIR/requested-utc-time.txt"
+          test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-flow-particles.html"
+          if [ -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-current-streamline-diagnostic.html" ]; then
+            echo "Option 1 streamline diagnostic page published."
+          else
+            echo "::warning::Option 1 streamline diagnostic page was not written; see the report's current-flow diagnostics table."
+          fi
       - name: Upload dated report and assets
         uses: actions/upload-artifact@v4
         with:
