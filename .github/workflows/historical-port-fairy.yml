@@ -199,6 +199,8 @@ jobs:
           test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-flow-particles.html"
           test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-earth-nullschool-flow.html"
           test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-leaflet-velocity.html"
+          test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-historical-observations.html"
+          test -d "$PORT_FAIRY_SITE_DIR/assets/port-fairy-historical-observations_files"
           if [ -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-current-streamline-diagnostic.html" ]; then
             echo "Option 1 streamline diagnostic page published."
           else

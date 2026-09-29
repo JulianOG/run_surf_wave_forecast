@@ -41,8 +41,42 @@ if (historical_run) {
   }
 }
 
-# For the normal run, try this month then the two preceding months.  For a
-# historical run, fetch the requested observation's monthly archive.
+# The daily forecast uses the near-real-time monthly archive. Historical
+# records are subsequently moved into AODN's delayed-mode collection, so a
+# historical run must discover that collection rather than guessing a retired
+# near-real-time monthly filename.
+aodn_bucket <- "https://imos-data.s3-ap-southeast-2.amazonaws.com"
+aodn_delayed_prefix <- "Deakin_University/WAVE-BUOYS/DELAYED/WAVE-PARAMETERS/PORT-FAIRY/"
+
+download_aodn_file <- function(url, data_dir) {
+  destination <- file.path(data_dir, basename(url))
+  temporary <- paste0(destination, ".download")
+  if (file.exists(destination) && file.info(destination)$size > 1000) {
+    return(destination)
+  }
+  if (file.exists(temporary)) unlink(temporary)
+
+  old_timeout <- getOption("timeout")
+  options(timeout = max(300, old_timeout))
+  on.exit(options(timeout = old_timeout), add = TRUE)
+  status <- tryCatch(
+    utils::download.file(url, temporary, mode = "wb", quiet = TRUE,
+                         method = "libcurl"),
+    error = function(e) {
+      message("AODN download failed for ", basename(url), ": ", conditionMessage(e))
+      1L
+    }
+  )
+  if (isTRUE(status == 0) && file.exists(temporary) &&
+      file.info(temporary)$size > 1000) {
+    if (file.exists(destination)) unlink(destination)
+    if (file.rename(temporary, destination)) return(destination)
+  }
+  if (file.exists(temporary)) unlink(temporary)
+  NULL
+}
+
+# For the normal run, try this month then the two preceding months.
 download_buoy_month <- function(month_start, data_dir) {
   # `for (x in Date_vector)` drops the Date class in R, so coerce defensively.
   month_start <- as.Date(month_start, origin = "1970-01-01")
@@ -54,40 +88,131 @@ download_buoy_month <- function(month_start, data_dir) {
     yyyy, "/VIC-DEAKIN-UNI_", ymd,
     "_PORT-FAIRY_RT_WAVE-PARAMETERS_monthly.nc"
   )
-  destination <- file.path(data_dir, basename(url))
-  temporary <- paste0(destination, ".download")
+  download_aodn_file(url, data_dir)
+}
 
-  if (file.exists(destination) && file.info(destination)$size > 1000) {
-    return(destination)
-  }
-
-  status <- tryCatch(
-    utils::download.file(url, temporary, mode = "wb", quiet = TRUE),
-    error = function(e) 1L
+list_delayed_buoy_urls <- function() {
+  temporary <- tempfile(fileext = ".xml")
+  on.exit(unlink(temporary), add = TRUE)
+  old_timeout <- getOption("timeout")
+  options(timeout = max(300, old_timeout))
+  on.exit(options(timeout = old_timeout), add = TRUE)
+  listing_url <- paste0(
+    aodn_bucket, "/?list-type=2&prefix=",
+    utils::URLencode(aodn_delayed_prefix, reserved = TRUE)
   )
-  if (isTRUE(status == 0) && file.exists(temporary) &&
-      file.info(temporary)$size > 1000) {
-    if (file.exists(destination)) unlink(destination)
-    if (file.rename(temporary, destination)) return(destination)
+  status <- tryCatch(
+    utils::download.file(listing_url, temporary, mode = "wb", quiet = TRUE,
+                         method = "libcurl"),
+    error = function(e) {
+      message("Could not list the AODN delayed-mode archive: ", conditionMessage(e))
+      1L
+    }
+  )
+  if (!isTRUE(status == 0) || !file.exists(temporary) ||
+      file.info(temporary)$size < 100) {
+    return(character())
   }
-  if (file.exists(temporary)) unlink(temporary)
-  NULL
+  xml <- paste(readLines(temporary, warn = FALSE), collapse = "\n")
+  matches <- regmatches(xml, gregexpr("<Key>[^<]+\\.nc</Key>", xml, perl = TRUE))[[1]]
+  keys <- sub("^<Key>", "", sub("</Key>$", "", matches))
+  unique(paste0(aodn_bucket, "/", keys))
 }
 
-month_starts <- if (!historical_run) {
-  seq(as.Date(format(Sys.time(), "%Y-%m-01")), by = "-1 month", length.out = 3)
+delayed_file_coverage <- function(urls) {
+  names <- basename(urls)
+  parts <- regmatches(
+    names,
+    regexec("^VIC-DEAKIN-UNI_([0-9]{8})_PORT-FAIRY_DM_WAVE-PARAMETERS_([0-9]{8})\\.nc$",
+            names)
+  )
+  start_text <- vapply(parts, function(x) if (length(x) == 3) x[2] else NA_character_, character(1))
+  end_text <- vapply(parts, function(x) if (length(x) == 3) x[3] else NA_character_, character(1))
+  data.frame(
+    url = urls,
+    start_date = as.Date(start_text, format = "%Y%m%d"),
+    end_date = as.Date(end_text, format = "%Y%m%d"),
+    stringsAsFactors = FALSE
+  )
+}
+
+download_delayed_buoy_window <- function(window_start, window_end, data_dir) {
+  urls <- list_delayed_buoy_urls()
+  if (!length(urls)) {
+    return(character())
+  }
+  coverage <- delayed_file_coverage(urls)
+  wanted <- !is.na(coverage$start_date) & !is.na(coverage$end_date) &
+    coverage$start_date <= as.Date(window_end, tz = "UTC") &
+    coverage$end_date >= as.Date(window_start, tz = "UTC")
+  if (!any(wanted)) {
+    return(character())
+  }
+  selected_urls <- coverage$url[wanted]
+  paths <- vapply(selected_urls, function(url) {
+    path <- download_aodn_file(url, data_dir)
+    if (is.null(path)) NA_character_ else path
+  }, character(1))
+  paths <- unname(paths[is.finite(nchar(paths)) & !is.na(paths)])
+  if (!length(paths)) {
+    return(character())
+  }
+  message("Using AODN delayed-mode buoy file(s): ", paste(basename(paths), collapse = ", "))
+  paths
+}
+
+observation_window_start_utc <- if (historical_run) {
+  requested_observation_utc - 7 * 86400
 } else {
-  as.Date(format(requested_observation_utc, "%Y-%m-01"))
+  as.POSIXct(NA, tz = "UTC")
 }
-buoy_file <- NULL
-for (month_index in seq_along(month_starts)) {
-  buoy_file <- download_buoy_month(month_starts[month_index], data_dir)
-  if (!is.null(buoy_file)) break
+observation_window_end_utc <- if (historical_run) {
+  requested_observation_utc + 7 * 86400
+} else {
+  as.POSIXct(NA, tz = "UTC")
 }
-if (is.null(buoy_file)) {
-  stop("Could not download a current or previous Port Fairy IMOS monthly file.")
+
+buoy_files <- if (historical_run) {
+  delayed_paths <- download_delayed_buoy_window(observation_window_start_utc,
+                                                observation_window_end_utc, data_dir)
+  if (length(delayed_paths)) {
+    delayed_paths
+  } else {
+    # A very recent historical request may not yet have reached delayed mode.
+    # Try the target month and its immediate neighbours in the realtime archive.
+    message("No AODN delayed-mode file matched this historical window; trying the realtime archive.")
+    target_month <- as.Date(format(requested_observation_utc, "%Y-%m-01"))
+    realtime_months <- unique(c(
+      seq(target_month, by = "-1 month", length.out = 2),
+      seq(target_month, by = "1 month", length.out = 2)
+    ))
+    realtime_paths <- vapply(realtime_months, function(month_start) {
+      path <- download_buoy_month(month_start, data_dir)
+      if (is.null(path)) NA_character_ else path
+    }, character(1))
+    realtime_paths <- unname(realtime_paths[!is.na(realtime_paths)])
+    if (!length(realtime_paths)) {
+      stop(
+        "Could not obtain Port Fairy buoy data for the requested historical window ",
+        "from either AODN delayed mode or the realtime monthly archive."
+      )
+    }
+    message("Delayed-mode archive did not cover this window; using realtime buoy file(s): ",
+            paste(basename(realtime_paths), collapse = ", "))
+    realtime_paths
+  }
+} else {
+  month_starts <- seq(as.Date(format(Sys.time(), "%Y-%m-01")), by = "-1 month", length.out = 3)
+  path <- NULL
+  for (month_index in seq_along(month_starts)) {
+    path <- download_buoy_month(month_starts[month_index], data_dir)
+    if (!is.null(path)) break
+  }
+  if (is.null(path)) {
+    stop("Could not download a current or previous Port Fairy IMOS monthly file.")
+  }
+  path
 }
-message("Using buoy data: ", basename(buoy_file))
 
 # Model-domain corners in clockwise order, read approximately from the supplied
 # figure. These become an axis-aligned rectangle in the local rotated CRS.
@@ -141,52 +266,80 @@ grid_tag <- if (abs(dx - dy) < 1e-8) {
 }
 
 # ----- Latest good / not-yet-evaluated buoy observation --------------------
-nc <- nc_open(buoy_file)
-on.exit(nc_close(nc), add = TRUE)
-
-read_buoy <- function(name) {
-  x <- ncvar_get(nc, name)
-  x[x <= -9990] <- NA_real_
-  x
+# A historical plot can straddle two delayed-mode files, so read every selected
+# file into one timestamped table and remove overlapping duplicate records.
+read_buoy_netcdf <- function(path) {
+  nc <- nc_open(path)
+  on.exit(nc_close(nc), add = TRUE)
+  if (!"TIME" %in% names(nc$dim)) {
+    stop("The IMOS file has no TIME coordinate: ", basename(path))
+  }
+  time_days <- nc$dim[["TIME"]]$vals
+  n <- length(time_days)
+  read_field <- function(name, required = FALSE) {
+    if (!name %in% names(nc$var)) {
+      if (required) stop("The IMOS file is missing ", name, ": ", basename(path))
+      return(rep(NA_real_, n))
+    }
+    values <- as.numeric(ncvar_get(nc, name))
+    values[values <= -9990] <- NA_real_
+    if (length(values) != n) {
+      stop("Unexpected ", name, " length in ", basename(path))
+    }
+    values
+  }
+  hs <- read_field("WSSH", required = TRUE)
+  tp <- read_field("WPPE", required = TRUE)
+  longitude <- read_field("LONGITUDE", required = TRUE)
+  latitude <- read_field("LATITUDE", required = TRUE)
+  dir_from_peak <- read_field("WPDI")
+  dir_from_mean <- read_field("SSWMD")
+  spread_peak <- read_field("WPDS")
+  spread_mean <- read_field("WMDS")
+  qc <- read_field("WAVE_quality_control", required = TRUE)
+  use_mean_direction <- is.finite(dir_from_mean)
+  data.frame(
+    time_utc = as.POSIXct("1950-01-01 00:00:00", tz = "UTC") + time_days * 86400,
+    longitude = longitude,
+    latitude = latitude,
+    hs_m = hs,
+    tp_s = tp,
+    direction_from_deg_true = ifelse(use_mean_direction, dir_from_mean, dir_from_peak),
+    directional_spread_deg = ifelse(use_mean_direction & is.finite(spread_mean),
+                                    spread_mean, spread_peak),
+    boundary_direction_statistic = ifelse(use_mean_direction, "mean", "peak fallback"),
+    mean_direction_from_deg_true = dir_from_mean,
+    mean_directional_spread_deg = spread_mean,
+    peak_direction_from_deg_true = dir_from_peak,
+    peak_directional_spread_deg = spread_peak,
+    qc = qc,
+    source_file = basename(path),
+    stringsAsFactors = FALSE
+  )
 }
 
-# In this IMOS file TIME is a dimension coordinate, not a variable, so it is
-# exposed by ncdf4 through nc$dim rather than ncvar_get().
-time_days <- nc$dim[["TIME"]]$vals
-time_utc <- as.POSIXct("1950-01-01 00:00:00", tz = "UTC") + time_days * 86400
-hs <- read_buoy("WSSH")
-tp <- read_buoy("WPPE")
+buoy_tables <- lapply(buoy_files, read_buoy_netcdf)
+buoy_records <- do.call(rbind, buoy_tables)
+if (!nrow(buoy_records)) stop("No records were read from the selected IMOS buoy file(s).")
+quality_rank <- ifelse(buoy_records$qc == 1, 0L,
+                       ifelse(buoy_records$qc == 2, 1L, 2L))
+buoy_records <- buoy_records[order(buoy_records$time_utc, quality_rank,
+                                   buoy_records$source_file), , drop = FALSE]
+buoy_records <- buoy_records[!duplicated(buoy_records$time_utc), , drop = FALSE]
+buoy_records <- buoy_records[order(buoy_records$time_utc), , drop = FALSE]
+rownames(buoy_records) <- NULL
 
-# Use the mean direction and matching mean directional spread when available.
-# IMOS calls these SSWMD and WMDS.  Retain the peak parameters as a per-record
-# fallback and save both in the output provenance table.
-dir_from_peak <- if ("WPDI" %in% names(nc$var)) {
-  read_buoy("WPDI")
-} else {
-  rep(NA_real_, length(hs))
-}
-dir_from_mean <- if ("SSWMD" %in% names(nc$var)) {
-  read_buoy("SSWMD")
-} else {
-  rep(NA_real_, length(hs))
-}
-spread_peak <- if ("WPDS" %in% names(nc$var)) {
-  read_buoy("WPDS")
-} else {
-  rep(NA_real_, length(hs))
-}
-spread_mean <- if ("WMDS" %in% names(nc$var)) {
-  read_buoy("WMDS")
-} else {
-  rep(NA_real_, length(hs))
-}
-
-use_mean_direction <- is.finite(dir_from_mean)
-dir_from <- ifelse(use_mean_direction, dir_from_mean, dir_from_peak)
-dir_spread <- ifelse(use_mean_direction & is.finite(spread_mean),
-                     spread_mean, spread_peak)
-direction_statistic <- ifelse(use_mean_direction, "mean", "peak fallback")
-qc <- ncvar_get(nc, "WAVE_quality_control")
+time_utc <- buoy_records$time_utc
+hs <- buoy_records$hs_m
+tp <- buoy_records$tp_s
+dir_from <- buoy_records$direction_from_deg_true
+dir_spread <- buoy_records$directional_spread_deg
+direction_statistic <- buoy_records$boundary_direction_statistic
+dir_from_mean <- buoy_records$mean_direction_from_deg_true
+spread_mean <- buoy_records$mean_directional_spread_deg
+dir_from_peak <- buoy_records$peak_direction_from_deg_true
+spread_peak <- buoy_records$peak_directional_spread_deg
+qc <- buoy_records$qc
 
 # QC 1 = good; 2 = not yet evaluated. Do not silently use questionable/bad.
 usable <- qc %in% c(1, 2) & is.finite(hs) & is.finite(tp) & is.finite(dir_from) &
@@ -207,6 +360,8 @@ if (historical_run) {
 } else {
   i <- tail(which(usable), 1)
 }
+buoy_file <- file.path(data_dir, buoy_records$source_file[i])
+message("Using buoy data: ", basename(buoy_file))
 
 # ----- Portland hourly water level -----------------------------------------
 # UHSLC fast-delivery data are UTC hourly values in millimetres. The Actions
@@ -229,6 +384,7 @@ portland_reference_datum <- "LAT assumed; Portland observation unavailable"
 portland_water_level_lat_m <- NA_real_
 portland_water_level_ahd_m <- 0
 portland_time_forcing <- as.POSIXct(NA, tz = "UTC")
+portland <- NULL
 if (!is.null(portland_file)) {
   portland <- tryCatch(
     utils::read.csv(
@@ -249,6 +405,8 @@ if (!is.null(portland_file)) {
               portland$day, portland$hour), tz = "UTC"
     )
     portland$level_mm[portland$level_mm <= -9990] <- NA_real_
+    portland$water_level_lat_m <- portland$level_mm / 1000
+    portland$water_level_ahd_m <- portland$water_level_lat_m + portland_to_ahd_offset_m
     target_time <- time_utc[i]
     portland_valid <- which(is.finite(portland$level_mm))
     nearest_portland <- if (length(portland_valid)) {
@@ -263,8 +421,8 @@ if (!is.null(portland_file)) {
     )))
     if (is.finite(portland_gap_minutes) && portland_gap_minutes <= 90) {
       portland_reference_datum <- "LAT (assumed from Portland tidal datum sheet)"
-      portland_water_level_lat_m <- portland$level_mm[nearest_portland] / 1000
-      portland_water_level_ahd_m <- portland_water_level_lat_m + portland_to_ahd_offset_m
+      portland_water_level_lat_m <- portland$water_level_lat_m[nearest_portland]
+      portland_water_level_ahd_m <- portland$water_level_ahd_m[nearest_portland]
       portland_time_forcing <- portland$time_utc[nearest_portland]
       message(sprintf("Portland water level: %.3f m LAT = %.3f m AHD",
                       portland_water_level_lat_m, portland_water_level_ahd_m))
@@ -275,6 +433,72 @@ if (!is.null(portland_file)) {
       )
     }
   }
+}
+
+# Historical reports include a transparent, interactive observed-condition
+# context: seven days either side of the requested model date. The model still
+# uses only the selected record at or before that date; these CSVs are report
+# context and never alter the forcing or the simulation.
+if (historical_run) {
+  historical_wave <- buoy_records[
+    buoy_records$time_utc >= observation_window_start_utc &
+      buoy_records$time_utc <= observation_window_end_utc,
+    , drop = FALSE
+  ]
+  historical_wave$qc_accepted <- historical_wave$qc %in% c(1, 2)
+  historical_wave$hs_m[!historical_wave$qc_accepted] <- NA_real_
+  historical_wave$tp_s[!historical_wave$qc_accepted] <- NA_real_
+  historical_wave$direction_from_deg_true[!historical_wave$qc_accepted] <- NA_real_
+  historical_wave_output <- data.frame(
+    time_utc = format(historical_wave$time_utc, tz = "UTC", usetz = TRUE),
+    time_local = format(historical_wave$time_utc, tz = "Australia/Melbourne", usetz = TRUE),
+    qc = historical_wave$qc,
+    qc_accepted = historical_wave$qc_accepted,
+    hs_m = historical_wave$hs_m,
+    tp_s = historical_wave$tp_s,
+    direction_from_deg_true = historical_wave$direction_from_deg_true,
+    direction_statistic = historical_wave$boundary_direction_statistic,
+    source_file = historical_wave$source_file,
+    check.names = FALSE, stringsAsFactors = FALSE
+  )
+  write.csv(historical_wave_output,
+            file.path(out_dir, "historical_wave_observations.csv"), row.names = FALSE)
+
+  historical_portland_output <- if (is.null(portland)) {
+    data.frame(
+      time_utc = character(), time_local = character(),
+      water_level_lat_m = numeric(), water_level_ahd_m = numeric(),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    historical_portland <- portland[
+      portland$time_utc >= observation_window_start_utc &
+        portland$time_utc <= observation_window_end_utc,
+      , drop = FALSE
+    ]
+    data.frame(
+      time_utc = format(historical_portland$time_utc, tz = "UTC", usetz = TRUE),
+      time_local = format(historical_portland$time_utc, tz = "Australia/Melbourne", usetz = TRUE),
+      water_level_lat_m = historical_portland$water_level_lat_m,
+      water_level_ahd_m = historical_portland$water_level_ahd_m,
+      stringsAsFactors = FALSE
+    )
+  }
+  write.csv(historical_portland_output,
+            file.path(out_dir, "historical_portland_water_levels.csv"), row.names = FALSE)
+
+  historical_window_metadata <- data.frame(
+    requested_time_utc = format(requested_observation_utc, tz = "UTC", usetz = TRUE),
+    selected_buoy_time_utc = format(time_utc[i], tz = "UTC", usetz = TRUE),
+    window_start_utc = format(observation_window_start_utc, tz = "UTC", usetz = TRUE),
+    window_end_utc = format(observation_window_end_utc, tz = "UTC", usetz = TRUE),
+    wave_records_qc_1_or_2 = sum(historical_wave_output$qc_accepted),
+    portland_records = nrow(historical_portland_output),
+    portland_datum = "LAT assumed; AHD = LAT - 0.597 m",
+    stringsAsFactors = FALSE
+  )
+  write.csv(historical_window_metadata,
+            file.path(out_dir, "historical_observation_window_metadata.csv"), row.names = FALSE)
 }
 
 # Map the measured directional spread (degrees) onto FUNWAVE WK_IRR's
@@ -308,8 +532,8 @@ omerc_crs <- paste0(
   " +k=1 +x_0=0 +y_0=0 +gamma=0 +datum=WGS84 +units=m +no_defs"
 )
 domain_poly_om <- project(domain_poly_ll, omerc_crs)
-buoy_ll <- vect(matrix(c(ncvar_get(nc, "LONGITUDE")[i],
-                          ncvar_get(nc, "LATITUDE")[i]), ncol = 2),
+buoy_ll <- vect(matrix(c(buoy_records$longitude[i],
+                          buoy_records$latitude[i]), ncol = 2),
                 crs = "EPSG:4326")
 buoy_om <- project(buoy_ll, omerc_crs)
 
@@ -394,6 +618,13 @@ theta_peak <- atan2(
 
 forcing <- data.frame(
   time_utc = format(time_utc[i], tz = "UTC", usetz = TRUE),
+  requested_observation_utc = if (historical_run) {
+    format(requested_observation_utc, tz = "UTC", usetz = TRUE)
+  } else {
+    NA_character_
+  },
+  historical_run = historical_run,
+  buoy_source_file = basename(buoy_file),
   qc = qc[i], hs_m = hs[i], tp_s = tp[i],
   boundary_direction_statistic = direction_statistic[i],
   boundary_direction_from_deg_true = dir_from[i],

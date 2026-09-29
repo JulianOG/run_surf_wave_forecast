@@ -608,6 +608,233 @@ if (nrow(station_timeseries)) {
   )
 }
 
+# Historical cases carry a small, explicit observed-condition context file
+# written by setup_port_fairy_funwave.R. The normal daily report never creates
+# these files, so it does not gain a historical-data section or extra widget.
+historical_wave_path <- file.path(case_dir, "historical_wave_observations.csv")
+historical_portland_path <- file.path(case_dir, "historical_portland_water_levels.csv")
+historical_window_metadata_path <- file.path(
+  case_dir, "historical_observation_window_metadata.csv"
+)
+historical_observation_available <- all(file.exists(
+  historical_wave_path, historical_portland_path, historical_window_metadata_path
+))
+historical_observation_page_url <- "assets/port-fairy-historical-observations.html"
+historical_observation_page_path <- file.path(
+  report_site_dir, historical_observation_page_url
+)
+historical_observation_page_status <- "Not a historical report."
+historical_observation_summary <- data.frame(
+  Diagnostic = "Historical observed-condition context", Value = "Not generated for the daily report.",
+  stringsAsFactors = FALSE, check.names = FALSE
+)
+
+parse_utc_timestamp <- function(x) {
+  as.POSIXct(sub(" UTC$", "", as.character(x)),
+             format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+}
+add_requested_time_rule <- function(widget, requested_time, values) {
+  finite_values <- values[is.finite(values)]
+  if (!length(finite_values) || is.na(requested_time)) return(widget)
+  limits <- range(finite_values)
+  if (diff(limits) == 0) limits <- limits + c(-0.1, 0.1)
+  plotly::add_segments(
+    widget, x = requested_time, xend = requested_time,
+    y = limits[1], yend = limits[2], inherit = FALSE, showlegend = FALSE,
+    line = list(color = "#d7301f", width = 1.5, dash = "dot"),
+    hoverinfo = "skip"
+  )
+}
+
+if (historical_observation_available) {
+  historical_wave <- tryCatch(
+    read.csv(historical_wave_path, check.names = FALSE),
+    error = function(e) {
+      historical_observation_page_status <<- paste0("Could not read historical wave observations: ", conditionMessage(e))
+      NULL
+    }
+  )
+  historical_portland <- tryCatch(
+    read.csv(historical_portland_path, check.names = FALSE),
+    error = function(e) {
+      historical_observation_page_status <<- paste0("Could not read historical Portland water levels: ", conditionMessage(e))
+      NULL
+    }
+  )
+  historical_window_metadata <- tryCatch(
+    read.csv(historical_window_metadata_path, check.names = FALSE),
+    error = function(e) {
+      historical_observation_page_status <<- paste0("Could not read historical observation metadata: ", conditionMessage(e))
+      NULL
+    }
+  )
+  required_wave_columns <- c("time_utc", "hs_m", "tp_s", "direction_from_deg_true")
+  required_tide_columns <- c("time_utc", "water_level_ahd_m")
+  if (is.null(historical_wave) || is.null(historical_portland) ||
+      is.null(historical_window_metadata) || nrow(historical_window_metadata) != 1 ||
+      !all(required_wave_columns %in% names(historical_wave)) ||
+      !all(required_tide_columns %in% names(historical_portland))) {
+    historical_observation_available <- FALSE
+    if (identical(historical_observation_page_status, "Not a historical report.")) {
+      historical_observation_page_status <- "Historical observed-condition files have an unexpected structure."
+    }
+  } else {
+    historical_wave$time_utc <- parse_utc_timestamp(historical_wave$time_utc)
+    historical_portland$time_utc <- parse_utc_timestamp(historical_portland$time_utc)
+    historical_wave$hover_local <- format(
+      historical_wave$time_utc, tz = port_fairy_tz, format = "%d %b %Y %H:%M %Z"
+    )
+    historical_portland$hover_local <- format(
+      historical_portland$time_utc, tz = port_fairy_tz, format = "%d %b %Y %H:%M %Z"
+    )
+    requested_historical_time <- parse_utc_timestamp(
+      historical_window_metadata$requested_time_utc[1]
+    )
+    selected_historical_time <- parse_utc_timestamp(
+      historical_window_metadata$selected_buoy_time_utc[1]
+    )
+    window_label <- paste0(
+      format(parse_utc_timestamp(historical_window_metadata$window_start_utc[1]),
+             tz = port_fairy_tz, format = "%d %b %Y %H:%M %Z"),
+      " to ",
+      format(parse_utc_timestamp(historical_window_metadata$window_end_utc[1]),
+             tz = port_fairy_tz, format = "%d %b %Y %H:%M %Z")
+    )
+
+    p_hs <- plotly::plot_ly(
+      historical_wave, x = ~time_utc, y = ~hs_m, text = ~hover_local,
+      type = "scatter", mode = "lines+markers",
+      line = list(color = ygnbu_palette[9], width = 2),
+      marker = list(color = ygnbu_palette[9], size = 4),
+      hovertemplate = "%{text}<br>Hs: %{y:.2f} m<extra></extra>",
+      showlegend = FALSE
+    )
+    p_hs <- add_requested_time_rule(p_hs, requested_historical_time,
+                                    c(0, historical_wave$hs_m))
+    p_hs <- plotly::add_markers(
+      p_hs, data = data.frame(time_utc = selected_historical_time,
+                              value = forcing$hs_m[1]),
+      x = ~time_utc, y = ~value, inherit = FALSE, showlegend = FALSE,
+      marker = list(color = "#d7301f", size = 9, symbol = "diamond"),
+      hovertemplate = "FUNWAVE forcing record<br>Hs: %{y:.2f} m<extra></extra>"
+    )
+    p_hs <- plotly::layout(p_hs, yaxis = list(title = "Hs (m)", rangemode = "tozero"))
+
+    p_tp <- plotly::plot_ly(
+      historical_wave, x = ~time_utc, y = ~tp_s, text = ~hover_local,
+      type = "scatter", mode = "lines+markers",
+      line = list(color = ygnbu_palette[7], width = 2),
+      marker = list(color = ygnbu_palette[7], size = 4),
+      hovertemplate = "%{text}<br>Tp: %{y:.2f} s<extra></extra>",
+      showlegend = FALSE
+    )
+    p_tp <- add_requested_time_rule(p_tp, requested_historical_time, historical_wave$tp_s)
+    p_tp <- plotly::add_markers(
+      p_tp, data = data.frame(time_utc = selected_historical_time,
+                              value = forcing$tp_s[1]),
+      x = ~time_utc, y = ~value, inherit = FALSE, showlegend = FALSE,
+      marker = list(color = "#d7301f", size = 9, symbol = "diamond"),
+      hovertemplate = "FUNWAVE forcing record<br>Tp: %{y:.2f} s<extra></extra>"
+    )
+    p_tp <- plotly::layout(p_tp, yaxis = list(title = "Tp (s)", rangemode = "tozero"))
+
+    p_direction <- plotly::plot_ly(
+      historical_wave, x = ~time_utc, y = ~direction_from_deg_true,
+      text = ~hover_local, type = "scatter", mode = "markers",
+      marker = list(color = ygnbu_palette[5], size = 5),
+      hovertemplate = "%{text}<br>Wave direction from: %{y:.0f}°<extra></extra>",
+      showlegend = FALSE
+    )
+    p_direction <- add_requested_time_rule(
+      p_direction, requested_historical_time, c(0, 360)
+    )
+    p_direction <- plotly::add_markers(
+      p_direction, data = data.frame(time_utc = selected_historical_time,
+                                     value = forcing$boundary_direction_from_deg_true[1]),
+      x = ~time_utc, y = ~value, inherit = FALSE, showlegend = FALSE,
+      marker = list(color = "#d7301f", size = 9, symbol = "diamond"),
+      hovertemplate = "FUNWAVE forcing record<br>Direction from: %{y:.0f}°<extra></extra>"
+    )
+    p_direction <- plotly::layout(
+      p_direction, yaxis = list(title = "Direction from (°)", range = c(0, 360), dtick = 90)
+    )
+
+    p_tide <- plotly::plot_ly(
+      historical_portland, x = ~time_utc, y = ~water_level_ahd_m,
+      text = ~hover_local, type = "scatter", mode = "lines",
+      line = list(color = ygnbu_palette[3], width = 2),
+      hovertemplate = "%{text}<br>Portland water level: %{y:.2f} m AHD<extra></extra>",
+      showlegend = FALSE
+    )
+    p_tide <- add_requested_time_rule(
+      p_tide, requested_historical_time, historical_portland$water_level_ahd_m
+    )
+    applied_portland_time <- parse_utc_timestamp(forcing$portland_water_level_time_utc[1])
+    if (is.finite(forcing$portland_water_level_ahd_m_applied[1]) &&
+        !is.na(applied_portland_time)) {
+      p_tide <- plotly::add_markers(
+        p_tide,
+        data = data.frame(
+          time_utc = applied_portland_time,
+          value = forcing$portland_water_level_ahd_m_applied[1]
+        ),
+        x = ~time_utc, y = ~value, inherit = FALSE, showlegend = FALSE,
+        marker = list(color = "#d7301f", size = 9, symbol = "diamond"),
+        hovertemplate = "FUNWAVE applied level<br>Portland: %{y:.2f} m AHD<extra></extra>"
+      )
+    }
+    p_tide <- plotly::layout(p_tide, yaxis = list(title = "Portland level (m AHD)"))
+
+    historical_observation_plot <- plotly::subplot(
+      p_hs, p_tp, p_direction, p_tide,
+      nrows = 4, shareX = TRUE, titleY = TRUE, margin = 0.045,
+      heights = c(0.25, 0.25, 0.25, 0.25)
+    )
+    historical_observation_plot <- plotly::layout(
+      historical_observation_plot,
+      title = paste0("Observed Port Fairy waves and Portland water level: ", window_label),
+      xaxis = list(title = "Port Fairy local time"),
+      hovermode = "x unified",
+      annotations = list(list(
+        text = "Red dotted line: requested model time. Red diamond: observation applied to FUNWAVE.",
+        x = 0, y = -0.08, xref = "paper", yref = "paper", showarrow = FALSE,
+        xanchor = "left", font = list(size = 11)
+      ))
+    )
+    historical_observation_plot <- plotly::config(
+      historical_observation_plot, displaylogo = FALSE, responsive = TRUE
+    )
+    dir.create(dirname(historical_observation_page_path), recursive = TRUE, showWarnings = FALSE)
+    historical_observation_page_status <- tryCatch({
+      htmlwidgets::saveWidget(
+        historical_observation_plot, historical_observation_page_path, selfcontained = FALSE
+      )
+      if (!file.exists(historical_observation_page_path) ||
+          file.info(historical_observation_page_path)$size < 1000) {
+        stop("The historical observed-condition page was not written.")
+      }
+      "Published interactive Hs, Tp, direction and Portland water-level plots."
+    }, error = function(e) {
+      paste0("Could not write historical observed-condition page: ", conditionMessage(e))
+    })
+    historical_observation_summary <- data.frame(
+      Diagnostic = c("Requested historical time", "FUNWAVE buoy forcing record",
+                     "Window", "QC 1/2 wave observations", "Portland observations",
+                     "Water-level datum", "Observed-condition page"),
+      Value = c(
+        format(requested_historical_time, tz = port_fairy_tz, usetz = TRUE),
+        format(selected_historical_time, tz = port_fairy_tz, usetz = TRUE),
+        window_label,
+        historical_window_metadata$wave_records_qc_1_or_2[1],
+        historical_window_metadata$portland_records[1],
+        historical_window_metadata$portland_datum[1],
+        historical_observation_page_status
+      ),
+      stringsAsFactors = FALSE, check.names = FALSE
+    )
+  }
+}
+
 # The existing streamline diagnostic and particle-trail page use FUNWAVE's
 # time-mean Umean/Vmean fields, not phase-resolved U/V snapshots.  That avoids
 # using wave-orbital velocities as currents: the latter reverse each wave
@@ -1555,6 +1782,37 @@ provides integral Hs and period parameters—not a phase-resolved spectrum.
 report_table(transpose_summary(forcing, digits = 2))
 ```
 
+```{r historical-observed-conditions-heading, results='asis', echo=FALSE}
+if (historical_observation_available) {
+  cat("## Observed conditions around the historical run\n\n")
+  cat(
+    "This interactive context shows QC 1/2 Port Fairy buoy Hs, Tp and wave direction, ",
+    "together with hourly Portland water level converted from assumed LAT to AHD, ",
+    "for seven days either side of the requested historical time. The red diamond ",
+    "marks the measurement used to force FUNWAVE; it may precede the requested time ",
+    "because historical forcing never uses a future observation.\n\n",
+    sep = ""
+  )
+}
+```
+
+```{r historical-observed-conditions, echo=FALSE}
+if (historical_observation_available) {
+  if (file.exists(historical_observation_page_path)) {
+    htmltools::tags$iframe(
+      src = historical_observation_page_url, width = "100%", height = "940",
+      style = "border: 1px solid #dfe6e9; display: block;"
+    )
+  } else {
+    htmltools::tags$p(historical_observation_page_status)
+  }
+}
+```
+
+```{r historical-observed-conditions-table, echo=FALSE}
+if (historical_observation_available) report_table(historical_observation_summary)
+```
+
 ## Latest free-surface elevation
 
 ```{r eta, echo=FALSE}
@@ -1653,6 +1911,11 @@ project, which received investment from the Australian Research Data Commons
 Suggested data citation: *Deakin University (year of data downloaded), Wave
 buoys Observations -- Australia -- near real-time, downloaded from the IMOS URL
 on the date of download.*
+
+For historical reports, the same Port Fairy records are read from the public
+AODN delayed-mode collection when available. The exact NetCDF filename used
+for the model forcing and the source filename for each displayed observation
+are retained in the report provenance/output files.
 
 ## Provenance
 

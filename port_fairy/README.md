@@ -30,10 +30,14 @@ wet/dry treatment can keep them dry.
 `data/VCDEM21_GDA2020_z54_Seamless_portFairy.tif` is the required local
 bathymetry/elevation input.
 
-The case preparation script downloads the current IMOS monthly Port Fairy
-wave-parameter NetCDF file. If it is unavailable, it tries the two preceding
-months. It selects the latest record with buoy quality-control status 1 or 2
-and finite wave parameters. [AusWaves: Victorian waves](https://auswaves.org/vic-waves/)
+The daily case-preparation script downloads the current IMOS realtime monthly
+Port Fairy wave-parameter NetCDF file. If it is unavailable, it tries the two
+preceding months. Historical cases first discover the public AODN delayed-mode
+Port Fairy archive, whose files retain their actual observation coverage; this
+avoids requesting retired realtime URLs for older dates. A very recent
+historical date can fall back to its realtime month while it awaits delayed-mode
+release. The script selects the latest record with buoy quality-control status
+1 or 2 and finite wave parameters. [AusWaves: Victorian waves](https://auswaves.org/vic-waves/)
 is a useful public companion viewer for the regional wave conditions.
 
 The selected forcing fields are:
@@ -64,9 +68,15 @@ separate downloadable artifact named `port-fairy-report-YYYYMMDDTHHMM-TZ`.
 Each artifact contains its timestamped HTML report and its own map assets; it
 does not overwrite the normal Pages forecast.
 
-The currently published archives overlap from **September 2022 to July 2026**:
-the Port Fairy IMOS monthly wave files start in September 2022 and the Portland
-UHSLC hourly record presently extends through July 2026.
+Each historical report also embeds a four-panel interactive context plot for
+the seven days either side of the requested date: observed Hs, Tp, mean wave
+direction (with peak-direction fallback) and Portland hourly water level. The
+red diamond identifies the buoy record applied to FUNWAVE; the red dotted line
+marks the requested model time. Wave observations retain QC 1 and 2 only.
+Portland values are shown in AHD using the documented assumption
+`AHD = LAT - 0.597 m`. If no delayed-mode or realtime buoy data covers the
+requested window, the workflow stops instead of silently substituting another
+date.
 
 ## Wave forcing
 
@@ -181,10 +191,11 @@ interpolates the station time series. The offshore/buoy end is dark blue and
 the nearshore end is yellow. The interactive station plot is shown as its own
 final report section.
 
-The report also includes an interactive local-domain mean-current map. It
-averages the final 60 seconds of native FUNWAVE `u`/`v` output, traces animated
-streamlines, and provides OpenStreetMap, satellite imagery, and a streamline
-layer toggle.
+The report also includes local-domain mean-current diagnostics based on
+FUNWAVE `Umean`/`Vmean`, rather than phase-resolved wave-orbital `u`/`v`.
+They include the original particle and streamline pages, an Earth-style trail
+renderer, and an additional Leaflet.Velocity page. All retain the map/layer
+controls and use the same masked mean-current field.
 
 ## Interpretation limits
 
