@@ -23,7 +23,9 @@ suppressPackageStartupMessages({
 leaflet_velocity_vendor_dir <- normalizePath("vendor", mustWork = TRUE)
 leaflet_velocity_dependency <- htmltools::htmlDependency(
   name = "leaflet-velocity",
-  version = "2.1.4-port-fairy",
+  # htmltools requires a normal numeric version here. The local filename can
+  # retain its Port Fairy suffix without becoming part of the package version.
+  version = "2.1.4",
   src = c(file = leaflet_velocity_vendor_dir),
   script = "leaflet-velocity-2.1.4-port-fairy.js",
   stylesheet = "leaflet-velocity-2.1.4.css"
@@ -50,7 +52,13 @@ if (!is.finite(grid$dx_m[1]) || !is.finite(grid$dy_m[1]) ||
     grid$total_time_s[1] <= 0 || grid$plot_intv_s[1] <= 0) {
   stop("Grid metadata must contain positive dx_m, dy_m, total_time_s and plot_intv_s values.")
 }
-metres_label <- function(x) sub("\\.?0+$", "", format(x, trim = TRUE, scientific = FALSE))
+metres_label <- function(x) {
+  # Strip decimal zeroes, not meaningful integer zeroes: the previous helper
+  # turned 200 into "2", which mislabelled the Umean/Vmean window as 2 s.
+  out <- formatC(as.numeric(x), format = "f", digits = 6)
+  out <- sub("0+$", "", out)
+  sub("\\.$", "", out)
+}
 public_output_dx_m <- if ("public_output_dx_m" %in% names(grid) &&
                           is.finite(grid$public_output_dx_m[1])) {
   grid$public_output_dx_m[1]
@@ -873,6 +881,34 @@ current_streamline_count <- 0L
 current_public_cell_count <- 0L
 current_public_grid_shape <- "n/a"
 current_selected_files <- "none"
+current_candidate_count <- 0L
+current_source_exclusion_m <- max(200, 20 * max(grid$dx_m[1], grid$dy_m[1]))
+
+# Umean/Vmean close to an internal wavemaker are dominated by the numerical
+# source zone rather than by an interpretable nearshore circulation pattern.
+# Keep the source visible as a reference line, but exclude a 200 m (minimum)
+# shoreward buffer from all current-path seeding and particle display fields.
+current_display_mask_model <- outer(
+  (seq_len(grid$Mglob[1]) - 1) * grid$dx_m[1], seq_len(grid$Nglob[1]),
+  function(x, y) x >= grid$x_wk_m[1] + current_source_exclusion_m
+)
+current_display_mask_rotated <- model_to_rotated_raster(
+  ifelse(current_display_mask_model, 1, NA_real_), "current-display mask"
+)
+apply_current_display_mask_model <- function(z) {
+  z <- apply_output_visibility_mask_model(z)
+  z[!current_display_mask_model] <- NA_real_
+  z
+}
+apply_current_display_mask_rotated <- function(r_om) {
+  r_om <- apply_output_visibility_mask_rotated(r_om)
+  display_mask <- current_display_mask_rotated
+  if (!compareGeom(display_mask, r_om, stopOnError = FALSE)) {
+    display_mask <- resample(display_mask, r_om, method = "near")
+  }
+  r_om[is.na(display_mask) | display_mask <= 0] <- NA_real_
+  r_om
+}
 
 model_xy_to_wgs84 <- function(xy_model) {
   xy_om <- if (source_is_low_x) {
@@ -884,20 +920,43 @@ model_xy_to_wgs84 <- function(xy_model) {
 }
 
 trace_current_streamline <- function(seed_xy, u_flow, v_flow, speed_floor,
-                                     step_m = 25, n_steps = 100) {
+                                     source_exclusion_m, step_m = 5,
+                                     n_steps = 520) {
+  # Bilinear midpoint integration avoids the jagged nearest-grid-cell paths
+  # that occurred when a particle crossed a 5 m cell boundary.
+  velocity_at <- function(xy) {
+    g <- xy / c(grid$dx_m[1], grid$dy_m[1]) + 1
+    i <- floor(g[1]); j <- floor(g[2])
+    if (i < 1 || j < 1 || i >= nrow(u_flow) || j >= ncol(u_flow)) return(NULL)
+    fx <- g[1] - i; fy <- g[2] - j
+    u_values <- c(u_flow[i, j], u_flow[i + 1, j],
+                  u_flow[i, j + 1], u_flow[i + 1, j + 1])
+    v_values <- c(v_flow[i, j], v_flow[i + 1, j],
+                  v_flow[i, j + 1], v_flow[i + 1, j + 1])
+    if (any(!is.finite(u_values)) || any(!is.finite(v_values))) return(NULL)
+    weights <- c((1 - fx) * (1 - fy), fx * (1 - fy),
+                 (1 - fx) * fy, fx * fy)
+    c(u = sum(weights * u_values), v = sum(weights * v_values))
+  }
+  inside <- function(xy) {
+    xy[1] >= grid$x_wk_m[1] + source_exclusion_m &&
+      xy[1] <= (nrow(u_flow) - 1) * grid$dx_m[1] &&
+      xy[2] >= 0 && xy[2] <= (ncol(u_flow) - 1) * grid$dy_m[1]
+  }
   advance <- function(direction) {
     xy <- seed_xy
     out <- matrix(xy, ncol = 2)
     for (step in seq_len(n_steps)) {
-      ij <- pmax(c(1, 1), pmin(c(nrow(u_flow), ncol(u_flow)),
-                               round(xy / c(grid$dx_m[1], grid$dy_m[1])) + 1L))
-      ux <- u_flow[ij[1], ij[2]]
-      vy <- v_flow[ij[1], ij[2]]
-      speed <- sqrt(ux^2 + vy^2)
-      if (!is.finite(speed) || speed < speed_floor) break
-      xy <- xy + direction * step_m * c(ux, vy) / speed
-      if (xy[1] < grid$x_wk_m[1] || xy[1] > (nrow(u_flow) - 1) * grid$dx_m[1] ||
-          xy[2] < 0 || xy[2] > (ncol(u_flow) - 1) * grid$dy_m[1]) break
+      v0 <- velocity_at(xy)
+      speed0 <- if (is.null(v0)) NA_real_ else sqrt(sum(v0^2))
+      if (!is.finite(speed0) || speed0 < speed_floor) break
+      midpoint <- xy + direction * 0.5 * step_m * v0 / speed0
+      vmid <- velocity_at(midpoint)
+      speed_mid <- if (is.null(vmid)) NA_real_ else sqrt(sum(vmid^2))
+      if (!is.finite(speed_mid) || speed_mid < speed_floor) break
+      candidate <- xy + direction * step_m * vmid / speed_mid
+      if (!inside(candidate)) break
+      xy <- candidate
       out <- rbind(out, xy)
     }
     out
@@ -912,7 +971,7 @@ if (length(current_numbers)) {
     path_numbers <- current_file_number(paths)
     fields <- lapply(numbers, function(number) {
       path <- paths[match(number, path_numbers)]
-      apply_output_visibility_mask_model(read_text_model(path, basename(path)))
+      apply_current_display_mask_model(read_text_model(path, basename(path)))
     })
     total <- matrix(0, nrow = nrow(fields[[1]]), ncol = ncol(fields[[1]]))
     count <- matrix(0, nrow = nrow(fields[[1]]), ncol = ncol(fields[[1]]))
@@ -934,60 +993,93 @@ if (length(current_numbers)) {
   current_time_label <- paste0(metres_label(grid$mean_wave_interval_s[1]),
                                " s FUNWAVE averaging interval")
   valid_speed <- current_speed[is.finite(current_speed) & current_speed > 0]
+  # The old 5 mm/s floor accepted only the rapid source-zone flow.  Use a
+  # small data-derived threshold so valid weak circulation can seed paths.
   speed_floor <- if (length(valid_speed)) {
-    max(0.005, 0.02 * as.numeric(stats::quantile(valid_speed, 0.15, na.rm = TRUE)))
+    max(0.0005, 0.10 * as.numeric(stats::quantile(valid_speed, 0.10, na.rm = TRUE)))
   } else {
     Inf
   }
   current_peak_speed <- if (length(valid_speed)) max(valid_speed) else NA_real_
   current_speed_floor <- speed_floor
 
-  x_margin <- max(2 * grid$dx_m[1], 25)
-  y_margin <- max(2 * grid$dy_m[1], 25)
-  x_start <- grid$x_wk_m[1] + x_margin
+  x_margin <- max(4 * grid$dx_m[1], 50)
+  y_margin <- max(4 * grid$dy_m[1], 100)
+  x_start <- grid$x_wk_m[1] + current_source_exclusion_m + x_margin
   x_end <- (nrow(u_flow) - 1) * grid$dx_m[1] - x_margin
   y_start <- y_margin
   y_end <- (ncol(u_flow) - 1) * grid$dy_m[1] - y_margin
   seeds <- if (x_start < x_end && y_start < y_end && is.finite(speed_floor)) {
     as.matrix(expand.grid(
-      seq(x_start, x_end, length.out = 15),
-      seq(y_start, y_end, length.out = 11)
+      seq(x_start, x_end, length.out = 29),
+      seq(y_start, y_end, length.out = 21)
     ))
   } else {
     matrix(numeric(), ncol = 2)
   }
   trace_seed_set <- function(seed_set, threshold) {
-    paths <- lapply(seq_len(nrow(seed_set)), function(k) {
+    candidates <- lapply(seq_len(nrow(seed_set)), function(k) {
       ij <- pmax(c(1, 1), pmin(c(nrow(u_flow), ncol(u_flow)),
                                round(seed_set[k, ] / c(grid$dx_m[1], grid$dy_m[1])) + 1L))
       if (!is.finite(current_speed[ij[1], ij[2]]) || current_speed[ij[1], ij[2]] < threshold) return(NULL)
-      trace_current_streamline(
+      path <- trace_current_streamline(
         seed_set[k, ], u_flow, v_flow, threshold,
-        step_m = max(5, min(15, 2 * min(grid$dx_m[1], grid$dy_m[1]))),
-        n_steps = 180
+        source_exclusion_m = current_source_exclusion_m,
+        step_m = max(2.5, min(7.5, min(grid$dx_m[1], grid$dy_m[1]))),
+        n_steps = 520
       )
+      if (nrow(path) < 20) return(NULL)
+      list(seed = as.numeric(seed_set[k, ]), path = path)
     })
-    Filter(function(z) !is.null(z) && nrow(z) >= 4, paths)
+    Filter(Negate(is.null), candidates)
+  }
+  select_spread_streamlines <- function(candidates, max_paths = 72L,
+                                        min_separation_m = 140) {
+    if (!length(candidates)) return(list())
+    order_by_length <- order(
+      vapply(candidates, function(z) nrow(z$path), integer(1)),
+      decreasing = TRUE
+    )
+    chosen <- list()
+    chosen_seeds <- matrix(numeric(), ncol = 2)
+    for (candidate_index in order_by_length) {
+      candidate <- candidates[[candidate_index]]
+      spaced <- !nrow(chosen_seeds) || all(sqrt(rowSums(
+        (chosen_seeds - matrix(candidate$seed, nrow = nrow(chosen_seeds),
+                               ncol = 2, byrow = TRUE))^2
+      )) >= min_separation_m)
+      if (spaced) {
+        chosen[[length(chosen) + 1L]] <- candidate
+        chosen_seeds <- rbind(chosen_seeds, candidate$seed)
+        if (length(chosen) >= max_paths) break
+      }
+    }
+    chosen
   }
   current_seed_count <- nrow(seeds)
-  streamlines_model <- trace_seed_set(seeds, speed_floor)
+  streamline_candidates <- trace_seed_set(seeds, speed_floor)
+  current_candidate_count <- length(streamline_candidates)
+  selected_streamlines <- select_spread_streamlines(streamline_candidates)
   # Do not silently publish a blank animation because the initially selected
   # percentile threshold was too strict. This lower threshold remains based on
-      # real FUNWAVE Umean/Vmean output; it merely allows slow, valid current paths to be
+  # real FUNWAVE Umean/Vmean output; it merely allows slow, valid current paths to be
   # shown and records the fallback in the diagnostics.
-  if (!length(streamlines_model) && length(valid_speed)) {
-    fallback_floor <- max(0.0005, 0.005 * as.numeric(stats::quantile(
+  if (!length(selected_streamlines) && length(valid_speed)) {
+    fallback_floor <- max(0.0001, 0.01 * as.numeric(stats::quantile(
       valid_speed, 0.05, na.rm = TRUE
     )))
     if (is.finite(fallback_floor) && fallback_floor < speed_floor) {
       speed_floor <- fallback_floor
       current_speed_floor <- speed_floor
-      streamlines_model <- trace_seed_set(seeds, speed_floor)
-      if (length(streamlines_model)) {
+      streamline_candidates <- trace_seed_set(seeds, speed_floor)
+      current_candidate_count <- length(streamline_candidates)
+      selected_streamlines <- select_spread_streamlines(streamline_candidates)
+      if (length(selected_streamlines)) {
         current_label <- paste0(current_label, " (low-speed path fallback)")
       }
     }
   }
+  streamlines_model <- lapply(selected_streamlines, function(z) z$path)
   streamlines_ll <- lapply(streamlines_model, model_xy_to_wgs84)
   streamlines_ll <- Filter(function(z) {
     is.matrix(z) && nrow(z) >= 4 && all(is.finite(z))
@@ -1012,6 +1104,8 @@ if (length(current_numbers)) {
     "Output window:", current_time_label,
     "Peak speed (m/s):", ifelse(is.finite(current_peak_speed), format(round(current_peak_speed, 3), nsmall = 3), "n/a"),
     "Trace floor (m/s):", ifelse(is.finite(current_speed_floor), format(round(current_speed_floor, 3), nsmall = 3), "n/a"),
+    "Wavemaker exclusion (m):", format(round(current_source_exclusion_m, 1), trim = TRUE),
+    "Candidate paths:", current_candidate_count,
     sep = "\n"
   )
 
@@ -1072,9 +1166,9 @@ if (length(current_numbers)) {
   }
 
   # The particle paths are traced through time-mean Umean/Vmean on the native
-  # rotated grid, using nearest native cells (no spatial interpolation). They
-  # are then projected to WGS84 as paths, so they retain the correct geographic
-  # direction even though FUNWAVE components are model-axis components.
+  # rotated grid using bilinear, midpoint integration. They are then projected
+  # to WGS84 as paths, retaining geographic direction without cell-to-cell
+  # stair-stepping.
   particle_routes <- lapply(streamlines_ll, function(z) {
     lapply(seq_len(nrow(z)), function(k) unname(as.numeric(z[k, c(2, 1)])))
   })
@@ -1088,7 +1182,7 @@ if (length(current_numbers)) {
     buoy = buoy_latlng,
     routes = particle_routes,
     label = paste(current_label, paste0("Output window: ", current_time_label),
-                  "Particle trails follow Umean/Vmean paths traced on the native rotated grid.",
+                  "Particle trails follow smoothly integrated Umean/Vmean paths on the native rotated grid.",
                   "Animation speed is visual only; direction is the simulated flow direction.",
                   sep = "\n"),
     debug = paste(debug_prefix, "Native current path grid:", current_public_grid_shape,
@@ -1102,9 +1196,11 @@ if (length(current_numbers)) {
     "var map=this;if(!map||typeof map.getPanes!=='function')map=this.map||this._map;",
     "if(!map||typeof map.getPanes!=='function'){console.error('Leaflet map was not available for flow particles');return;}",
     "var routes=data.routes||[],bounds=L.latLngBounds(data.bounds),particles=[];",
-    "function pointAt(route,phase){var n=route.length-1;if(n<1)return null;var t=((phase%1)+1)%1*n,i=Math.floor(t),f=t-i,a=route[i],b=route[Math.min(i+1,n)];return [a[0]+f*(b[0]-a[0]),a[1]+f*(b[1]-a[1])];}",
-    "routes.forEach(function(route,i){if(route&&route.length>3){for(var j=0;j<3;j++)particles.push({route:route,offset:(i*0.137+j/3)%1});}});",
-    "var FlowTrails=L.Layer.extend({initialize:function(){this._running=false;},onAdd:function(m){this._map=m;this._canvas=L.DomUtil.create('canvas','leaflet-zoom-animated',m.getPanes().overlayPane);this._canvas.style.pointerEvents='none';this._canvas.style.zIndex=650;this._resize();m.on('resize moveend zoomend',this._resize,this);this._running=true;this._frame=window.requestAnimationFrame(this._animate.bind(this));},onRemove:function(m){this._running=false;window.cancelAnimationFrame(this._frame);m.off('resize moveend zoomend',this._resize,this);L.DomUtil.remove(this._canvas);this._map=null;},_resize:function(){if(!this._map||!this._canvas)return;var s=this._map.getSize(),d=window.devicePixelRatio||1;this._canvas.width=Math.max(1,Math.round(s.x*d));this._canvas.height=Math.max(1,Math.round(s.y*d));this._canvas.style.width=s.x+'px';this._canvas.style.height=s.y+'px';this._topLeft=this._map.containerPointToLayerPoint([0,0]);L.DomUtil.setPosition(this._canvas,this._topLeft);this._ctx=this._canvas.getContext('2d');this._ctx.setTransform(d,0,0,d,0,0);},_animate:function(t){if(!this._running)return;var ctx=this._ctx,s=this._map.getSize(),phase=t/18000;ctx.clearRect(0,0,s.x,s.y);ctx.lineCap='round';particles.forEach(function(p){var trail=[];for(var q=13;q>=0;q--){var ll=pointAt(p.route,phase+p.offset-q*0.010);if(ll)trail.push(ll);}if(trail.length<2)return;ctx.beginPath();trail.forEach(function(ll,k){var pt=map.latLngToLayerPoint(ll),x=pt.x-this._topLeft.x,y=pt.y-this._topLeft.y;if(k===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);},this);ctx.strokeStyle='rgba(8,48,107,0.72)';ctx.lineWidth=1.3;ctx.stroke();var head=trail[trail.length-1],hp=map.latLngToLayerPoint(head);ctx.fillStyle='rgba(44,127,184,0.96)';ctx.beginPath();ctx.arc(hp.x-this._topLeft.x,hp.y-this._topLeft.y,2.1,0,Math.PI*2);ctx.fill();},this);this._frame=window.requestAnimationFrame(this._animate.bind(this));}});",
+    "function distanceM(a,b){var r=6371000,dlat=(b[0]-a[0])*Math.PI/180,dlon=(b[1]-a[1])*Math.PI/180,lat=(a[0]+b[0])*Math.PI/360;return r*Math.sqrt(dlat*dlat+Math.cos(lat)*Math.cos(lat)*dlon*dlon);}",
+    "function prepareRoute(points){if(!points||points.length<4)return null;var cumulative=[0];for(var i=1;i<points.length;i++)cumulative.push(cumulative[i-1]+distanceM(points[i-1],points[i]));var length=cumulative[cumulative.length-1];return length>40?{points:points,cumulative:cumulative,length:length}:null;}",
+    "function pointAt(route,metres){if(!route||metres<0||metres>route.length)return null;var i=0;while(i<route.cumulative.length-2&&route.cumulative[i+1]<metres)i++;var a=route.points[i],b=route.points[i+1],span=route.cumulative[i+1]-route.cumulative[i],f=span>0?(metres-route.cumulative[i])/span:0;return [a[0]+f*(b[0]-a[0]),a[1]+f*(b[1]-a[1])];}",
+    "routes.map(prepareRoute).filter(function(route){return route!==null;}).forEach(function(route,i){for(var j=0;j<4;j++)particles.push({route:route,distance:(i*47+j*route.length/4)%route.length});});",
+    "var FlowTrails=L.Layer.extend({initialize:function(){this._running=false;},onAdd:function(m){this._map=m;this._canvas=L.DomUtil.create('canvas','leaflet-zoom-animated',m.getPanes().overlayPane);this._canvas.style.pointerEvents='none';this._canvas.style.zIndex=650;this._resize();m.on('resize moveend zoomend',this._resize,this);this._running=true;this._last=performance.now();this._frame=window.requestAnimationFrame(this._animate.bind(this));},onRemove:function(m){this._running=false;window.cancelAnimationFrame(this._frame);m.off('resize moveend zoomend',this._resize,this);L.DomUtil.remove(this._canvas);this._map=null;},_resize:function(){if(!this._map||!this._canvas)return;var s=this._map.getSize(),d=window.devicePixelRatio||1;this._canvas.width=Math.max(1,Math.round(s.x*d));this._canvas.height=Math.max(1,Math.round(s.y*d));this._canvas.style.width=s.x+'px';this._canvas.style.height=s.y+'px';this._topLeft=this._map.containerPointToLayerPoint([0,0]);L.DomUtil.setPosition(this._canvas,this._topLeft);this._ctx=this._canvas.getContext('2d');this._ctx.setTransform(d,0,0,d,0,0);},_animate:function(t){if(!this._running)return;var dt=Math.min(.08,Math.max(.005,(t-this._last)/1000));this._last=t;var ctx=this._ctx,s=this._map.getSize();ctx.clearRect(0,0,s.x,s.y);ctx.lineCap='round';particles.forEach(function(p){p.distance+=dt*180;if(p.distance>p.route.length+220)p.distance=-Math.random()*220;var trail=[];for(var d=p.distance-220;d<=p.distance;d+=10){var ll=pointAt(p.route,d);if(ll)trail.push(ll);}if(trail.length<2)return;ctx.beginPath();trail.forEach(function(ll,k){var pt=map.latLngToLayerPoint(ll),px=pt.x-this._topLeft.x,py=pt.y-this._topLeft.y;if(k===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);},this);ctx.strokeStyle='rgba(8,48,107,0.78)';ctx.lineWidth=1.45;ctx.stroke();var head=trail[trail.length-1],hp=map.latLngToLayerPoint(head);ctx.fillStyle='rgba(44,127,184,0.98)';ctx.beginPath();ctx.arc(hp.x-this._topLeft.x,hp.y-this._topLeft.y,2.3,0,Math.PI*2);ctx.fill();},this);this._frame=window.requestAnimationFrame(this._animate.bind(this));}});",
     "var flowTrails=new FlowTrails();flowTrails.addTo(map);",
     "L.control.layers({}, {'Flowing particle trails':flowTrails},{collapsed:false}).addTo(map);",
     "function panel(position,text){var c=L.control({position:position});c.onAdd=function(){var d=L.DomUtil.create('div');d.style.background='rgba(255,255,255,.92)';d.style.padding='6px';d.style.font='12px Arial';d.style.whiteSpace='pre-line';d.textContent=text;return d;};c.addTo(map);}",
@@ -1287,21 +1383,25 @@ if (length(earth_common_numbers)) {
                                  ", Vmean_", sprintf("%05d", earth_selected_number))
   earth_u_path <- earth_u_paths[match(earth_selected_number, earth_u_numbers)]
   earth_v_path <- earth_v_paths[match(earth_selected_number, earth_v_numbers)]
-  earth_u_native <- apply_output_visibility_mask_model(
+  earth_u_native <- apply_current_display_mask_model(
     read_text_model(earth_u_path, basename(earth_u_path))
   )
-  earth_v_native <- apply_output_visibility_mask_model(
+  earth_v_native <- apply_current_display_mask_model(
     read_text_model(earth_v_path, basename(earth_v_path))
   )
 
   # Use the same compact public x/y resolution as the map products. The
   # current field remains a model-derived display; station files remain exact
   # native grid-point outputs with no interpolation.
-  earth_u_public_om <- make_public_output_rotated(
-    model_to_rotated_raster(earth_u_native, basename(earth_u_path))
+  earth_u_public_om <- apply_current_display_mask_rotated(
+    make_public_output_rotated(
+      model_to_rotated_raster(earth_u_native, basename(earth_u_path))
+    )
   )
-  earth_v_public_om <- make_public_output_rotated(
-    model_to_rotated_raster(earth_v_native, basename(earth_v_path))
+  earth_v_public_om <- apply_current_display_mask_rotated(
+    make_public_output_rotated(
+      model_to_rotated_raster(earth_v_native, basename(earth_v_path))
+    )
   )
   earth_u_public <- rotated_raster_to_model_xy(earth_u_public_om)
   earth_v_public <- rotated_raster_to_model_xy(earth_v_public_om)
@@ -1335,7 +1435,9 @@ if (length(earth_common_numbers)) {
   earth_corner_latlng <- lapply(seq_len(nrow(earth_corner_ll)), function(k) {
     unname(as.numeric(earth_corner_ll[k, c(2, 1)]))
   })
-  earth_particle_count <- max(350L, min(1800L, as.integer(round(2.0 * 900))))
+  # A fixed, moderate density keeps the browser responsive while ensuring the
+  # local field is visibly populated rather than clustered around fast cells.
+  earth_particle_count <- 900L
   earth_data <- list(
     bounds = earth_bounds,
     outline = earth_outline_latlng,
@@ -1371,8 +1473,8 @@ if (length(earth_common_numbers)) {
     "grid.addTo(map);paddle.addTo(map);buoy.addTo(map);map.fitBounds(bounds,{padding:[4,4]});map.setMaxBounds(bounds);",
     "function panel(position,text){var c=L.control({position:position});c.onAdd=function(){var d=L.DomUtil.create('div');d.style.background='rgba(255,255,255,.92)';d.style.padding='6px';d.style.font='12px Arial';d.style.whiteSpace='pre-line';d.textContent=text;return d;};c.addTo(map);return c;}",
     "panel('bottomleft',data.model_time_label+'\\nDisplay field: '+data.dx_m+' m x '+data.dy_m+' m\\nParticle speed is visual only.');panel('bottomright',data.credit);",
-    "var MAX_PARTICLE_AGE=100,DISPLAY_TIME_SCALE=160,particleCount=Math.max(350,Math.min(1800,Math.round(map.getSize().x*2)));",
-    "var EarthFlowLayer=L.Layer.extend({initialize:function(){this._running=false;this._particles=[];},onAdd:function(m){this._map=m;this._canvas=L.DomUtil.create('canvas','leaflet-zoom-animated',m.getPanes().overlayPane);this._canvas.style.pointerEvents='none';this._canvas.style.zIndex=650;this._resize();m.on('resize moveend zoomend',this._resize,this);for(var k=0;k<particleCount;k++)this._particles.push(this._randomize({age:Math.random()*MAX_PARTICLE_AGE}));this._running=true;this._last=performance.now();this._frame=window.requestAnimationFrame(this._animate.bind(this));},onRemove:function(m){this._running=false;window.cancelAnimationFrame(this._frame);m.off('resize moveend zoomend',this._resize,this);L.DomUtil.remove(this._canvas);this._map=null;},_resize:function(){if(!this._map||!this._canvas)return;var s=this._map.getSize(),d=window.devicePixelRatio||1;this._canvas.width=Math.max(1,Math.round(s.x*d));this._canvas.height=Math.max(1,Math.round(s.y*d));this._canvas.style.width=s.x+'px';this._canvas.style.height=s.y+'px';this._topLeft=this._map.containerPointToLayerPoint([0,0]);L.DomUtil.setPosition(this._canvas,this._topLeft);this._ctx=this._canvas.getContext('2d');this._ctx.setTransform(d,0,0,d,0,0);},_randomize:function(p){for(var n=0;n<1200;n++){p.x=Math.random()*(nx-1);p.y=Math.random()*(ny-1);var w=vectorAt(p.x,p.y);if(w&&w.m>=data.min_speed_m_s){p.age=Math.random()*MAX_PARTICLE_AGE;return p;}}p.age=MAX_PARTICLE_AGE+1;return p;},_colour:function(m){var q=Math.max(0,Math.min(1,m/Math.max(data.max_speed_m_s,1e-6)));if(q<.25)return '#ffffcc';if(q<.5)return '#a1dab4';if(q<.75)return '#41b6c4';return '#225ea8';},_animate:function(now){if(!this._running)return;var dt=Math.min(.05,Math.max(.001,(now-this._last)/1000));this._last=now;var ctx=this._ctx,s=this._map.getSize(),self=this;var previous=ctx.globalCompositeOperation;ctx.globalCompositeOperation='destination-in';ctx.fillStyle='rgba(0,0,0,0.92)';ctx.fillRect(0,0,s.x,s.y);ctx.globalCompositeOperation=previous;ctx.lineWidth=1.15;ctx.lineCap='round';this._particles.forEach(function(p){if(p.age>MAX_PARTICLE_AGE)self._randomize(p);var w=vectorAt(p.x,p.y);if(!w||w.m<data.min_speed_m_s){p.age=MAX_PARTICLE_AGE+1;return;}var xt=p.x+w.u*dt*DISPLAY_TIME_SCALE/data.dx_m,yt=p.y+w.v*dt*DISPLAY_TIME_SCALE/data.dy_m,next=vectorAt(xt,yt);if(!next||next.m<data.min_speed_m_s){p.age=MAX_PARTICLE_AGE+1;return;}var a=modelToLatLng(p.x,p.y),b=modelToLatLng(xt,yt),pa=map.latLngToLayerPoint(a),pb=map.latLngToLayerPoint(b);ctx.beginPath();ctx.strokeStyle=self._colour(w.m);ctx.moveTo(pa.x-self._topLeft.x,pa.y-self._topLeft.y);ctx.lineTo(pb.x-self._topLeft.x,pb.y-self._topLeft.y);ctx.stroke();p.x=xt;p.y=yt;p.age+=1;});this._frame=window.requestAnimationFrame(this._animate.bind(this));}});",
+    "var MAX_PARTICLE_AGE=300,DISPLAY_TIME_SCALE=24000,particleCount=Math.max(450,Math.min(1100,data.particle_count||900));",
+    "var EarthFlowLayer=L.Layer.extend({initialize:function(){this._running=false;this._particles=[];},onAdd:function(m){this._map=m;this._canvas=L.DomUtil.create('canvas','leaflet-zoom-animated',m.getPanes().overlayPane);this._canvas.style.pointerEvents='none';this._canvas.style.zIndex=650;this._resize();m.on('resize moveend zoomend',this._resize,this);for(var k=0;k<particleCount;k++)this._particles.push(this._randomize({age:Math.random()*MAX_PARTICLE_AGE}));this._running=true;this._last=performance.now();this._frame=window.requestAnimationFrame(this._animate.bind(this));},onRemove:function(m){this._running=false;window.cancelAnimationFrame(this._frame);m.off('resize moveend zoomend',this._resize,this);L.DomUtil.remove(this._canvas);this._map=null;},_resize:function(){if(!this._map||!this._canvas)return;var s=this._map.getSize(),d=window.devicePixelRatio||1;this._canvas.width=Math.max(1,Math.round(s.x*d));this._canvas.height=Math.max(1,Math.round(s.y*d));this._canvas.style.width=s.x+'px';this._canvas.style.height=s.y+'px';this._topLeft=this._map.containerPointToLayerPoint([0,0]);L.DomUtil.setPosition(this._canvas,this._topLeft);this._ctx=this._canvas.getContext('2d');this._ctx.setTransform(d,0,0,d,0,0);},_randomize:function(p){for(var n=0;n<1600;n++){p.x=Math.random()*(nx-1);p.y=Math.random()*(ny-1);var w=vectorAt(p.x,p.y);if(w&&w.m>=data.min_speed_m_s){p.age=Math.random()*MAX_PARTICLE_AGE;return p;}}p.age=MAX_PARTICLE_AGE+1;return p;},_colour:function(m){var q=Math.max(0,Math.min(1,m/Math.max(data.max_speed_m_s,1e-6)));if(q<.25)return '#ffffcc';if(q<.5)return '#a1dab4';if(q<.75)return '#41b6c4';return '#225ea8';},_animate:function(now){if(!this._running)return;var dt=Math.min(.05,Math.max(.001,(now-this._last)/1000));this._last=now;var ctx=this._ctx,s=this._map.getSize(),self=this;var previous=ctx.globalCompositeOperation;ctx.globalCompositeOperation='destination-in';ctx.fillStyle='rgba(0,0,0,0.96)';ctx.fillRect(0,0,s.x,s.y);ctx.globalCompositeOperation=previous;ctx.lineWidth=1.2;ctx.lineCap='round';this._particles.forEach(function(p){if(p.age>MAX_PARTICLE_AGE)self._randomize(p);var w=vectorAt(p.x,p.y);if(!w||w.m<data.min_speed_m_s){p.age=MAX_PARTICLE_AGE+1;return;}var stepM=Math.max(1.5,Math.min(18,w.m*dt*DISPLAY_TIME_SCALE)),mx=p.x+0.5*stepM*w.u/w.m/data.dx_m,my=p.y+0.5*stepM*w.v/w.m/data.dy_m,mid=vectorAt(mx,my)||w,xt=p.x+stepM*mid.u/mid.m/data.dx_m,yt=p.y+stepM*mid.v/mid.m/data.dy_m,next=vectorAt(xt,yt);if(!next||next.m<data.min_speed_m_s){p.age=MAX_PARTICLE_AGE+1;return;}var a=modelToLatLng(p.x,p.y),b=modelToLatLng(xt,yt),pa=map.latLngToLayerPoint(a),pb=map.latLngToLayerPoint(b);ctx.beginPath();ctx.strokeStyle=self._colour(w.m);ctx.moveTo(pa.x-self._topLeft.x,pa.y-self._topLeft.y);ctx.lineTo(pb.x-self._topLeft.x,pb.y-self._topLeft.y);ctx.stroke();p.x=xt;p.y=yt;p.age+=dt*60;});this._frame=window.requestAnimationFrame(this._animate.bind(this));}});",
     "var earthFlow=new EarthFlowLayer();earthFlow.addTo(map);",
     "L.control.layers({'OpenStreetMap':osm,'Satellite imagery':satellite},{'Earth-style mean-current particles':earthFlow,'FUNWAVE grid':grid,'Internal wavemaker':paddle,'Buoy':buoy},{collapsed:false}).addTo(map);",
     "window.setTimeout(function(){map.invalidateSize();map.fitBounds(bounds,{padding:[4,4]});map.setMaxBounds(bounds);},250);",
@@ -1498,19 +1600,23 @@ if (length(earth_common_numbers)) {
   )
   umean_path <- earth_u_paths[match(leaflet_velocity_number, earth_u_numbers)]
   vmean_path <- earth_v_paths[match(leaflet_velocity_number, earth_v_numbers)]
-  umean_model <- apply_output_visibility_mask_model(
+  umean_model <- apply_current_display_mask_model(
     read_text_model(umean_path, basename(umean_path))
   )
-  vmean_model <- apply_output_visibility_mask_model(
+  vmean_model <- apply_current_display_mask_model(
     read_text_model(vmean_path, basename(vmean_path))
   )
   true_components <- model_components_to_true_en(umean_model, vmean_model)
 
-  u_east_om <- make_public_output_rotated(
-    model_to_rotated_raster(true_components$east, basename(umean_path))
+  u_east_om <- apply_current_display_mask_rotated(
+    make_public_output_rotated(
+      model_to_rotated_raster(true_components$east, basename(umean_path))
+    )
   )
-  v_north_om <- make_public_output_rotated(
-    model_to_rotated_raster(true_components$north, basename(vmean_path))
+  v_north_om <- apply_current_display_mask_rotated(
+    make_public_output_rotated(
+      model_to_rotated_raster(true_components$north, basename(vmean_path))
+    )
   )
   u_east_ll <- apply_water_masks_wgs84(project(u_east_om, "EPSG:4326", method = "bilinear"))
   v_north_ll <- apply_water_masks_wgs84(project(v_north_om, "EPSG:4326", method = "bilinear"))
