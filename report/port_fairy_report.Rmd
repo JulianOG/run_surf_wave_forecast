@@ -901,7 +901,10 @@ apply_current_display_mask_model <- function(z) {
   z
 }
 apply_current_display_mask_rotated <- function(r_om) {
-  r_om <- apply_output_visibility_mask_rotated(r_om)
+  # Callers have already run make_public_output_rotated(), which applies the
+  # DEM and basic wavemaker masks at the field's own resolution. Do not apply
+  # native masks again here: public fields can have 10 m cells while the native
+  # mask is 5 m, and terra correctly rejects mismatched extents.
   display_mask <- current_display_mask_rotated
   if (!compareGeom(display_mask, r_om, stopOnError = FALSE)) {
     display_mask <- resample(display_mask, r_om, method = "near")
