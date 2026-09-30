@@ -883,6 +883,15 @@ current_public_grid_shape <- "n/a"
 current_selected_files <- "none"
 current_candidate_count <- 0L
 current_source_exclusion_m <- max(200, 20 * max(grid$dx_m[1], grid$dy_m[1]))
+# Smooth the vector components, never the angle. A 50 m Gaussian standard
+# deviation (about 120 m full-width at half-maximum) removes wavelength-scale
+# crest/trough residuals while retaining rip-scale circulation.
+current_smoothing_sigma_m <- 50
+current_smoothing_label <- paste0(
+  "masked Gaussian component smoothing: sigma ",
+  metres_label(current_smoothing_sigma_m), " m (FWHM ",
+  metres_label(2.355 * current_smoothing_sigma_m), " m)"
+)
 
 # Umean/Vmean close to an internal wavemaker are dominated by the numerical
 # source zone rather than by an interpretable nearshore circulation pattern.
@@ -911,6 +920,48 @@ apply_current_display_mask_rotated <- function(r_om) {
   }
   r_om[is.na(display_mask) | display_mask <= 0] <- NA_real_
   r_om
+}
+
+smooth_mean_current_components <- function(u, v, sigma_m = current_smoothing_sigma_m) {
+  # Work in native FUNWAVE x/y before any aggregation or geographic projection.
+  # Invalid land/source cells carry zero numerator *and* zero weight, so this
+  # normalized filter cannot import values across the existing water mask.
+  valid <- is.finite(u) & is.finite(v)
+  if (!any(valid) || !is.finite(sigma_m) || sigma_m <= 0) {
+    u[!valid] <- NA_real_
+    v[!valid] <- NA_real_
+    return(list(u = u, v = v))
+  }
+
+  radius_x <- max(1L, ceiling(3 * sigma_m / grid$dx_m[1]))
+  radius_y <- max(1L, ceiling(3 * sigma_m / grid$dy_m[1]))
+  x_m <- seq.int(-radius_x, radius_x) * grid$dx_m[1]
+  y_m <- seq.int(-radius_y, radius_y) * grid$dy_m[1]
+  weights <- outer(x_m, y_m, function(x, y) {
+    exp(-0.5 * ((x / sigma_m)^2 + (y / sigma_m)^2))
+  })
+  weights <- weights / sum(weights)
+
+  matrix_raster <- function(z) {
+    r <- rast(nrows = nrow(z), ncols = ncol(z),
+              xmin = 0, xmax = nrow(z), ymin = 0, ymax = ncol(z))
+    values(r) <- as.numeric(t(z))
+    r
+  }
+  raster_matrix <- function(r, n_x, n_y) {
+    matrix(values(r), nrow = n_x, ncol = n_y, byrow = TRUE)
+  }
+  focal_normalized <- function(z) {
+    z[!valid] <- 0
+    numerator <- focal(matrix_raster(z), w = weights, fun = "sum", fillvalue = 0)
+    denominator <- focal(matrix_raster(ifelse(valid, 1, 0)), w = weights,
+                         fun = "sum", fillvalue = 0)
+    out <- raster_matrix(numerator, nrow(z), ncol(z)) /
+      raster_matrix(denominator, nrow(z), ncol(z))
+    out[!valid] <- NA_real_
+    out
+  }
+  list(u = focal_normalized(u), v = focal_normalized(v))
 }
 
 model_xy_to_wgs84 <- function(xy_model) {
@@ -991,10 +1042,15 @@ if (length(current_numbers)) {
   current_selected_files <- paste(sprintf("%05d", current_numbers), collapse = ", ")
   u_flow <- read_current_component(u_paths, current_numbers)
   v_flow <- read_current_component(v_paths, current_numbers)
+  current_smoothed <- smooth_mean_current_components(u_flow, v_flow)
+  u_flow <- current_smoothed$u
+  v_flow <- current_smoothed$v
   current_speed <- sqrt(u_flow^2 + v_flow^2)
-  current_label <- "Time-mean depth-averaged current: latest Umean/Vmean output"
+  current_label <- paste0("Time-mean depth-averaged current: latest Umean/Vmean output; ",
+                          current_smoothing_label)
   current_time_label <- paste0(metres_label(grid$mean_wave_interval_s[1]),
-                               " s FUNWAVE averaging interval")
+                               " s FUNWAVE averaging interval; ",
+                               current_smoothing_label)
   valid_speed <- current_speed[is.finite(current_speed) & current_speed > 0]
   # The old 5 mm/s floor accepted only the rapid source-zone flow.  Use a
   # small data-derived threshold so valid weak circulation can seed paths.
@@ -1294,12 +1350,14 @@ if (!file.exists(current_particle_page_path)) {
 current_debug <- data.frame(
   Diagnostic = c("Umean field files found", "Vmean field files found", "Paired Umean/Vmean field files",
                  "Selected file number(s)", "Current field used", "Mean-current output window",
+                 "Current spatial smoothing",
                  "Peak vector speed (m/s)", "Trace / particle floor (m/s)",
                  "Option 1 seeds", "Option 1 completed paths",
                  "Particle-path native grid",
                  "Option 1 diagnostic page", "Option 2 path vertices", "Particle-trail page"),
   Value = c(length(u_paths), length(v_paths), length(common_current_numbers),
             current_selected_files, current_label, current_time_label,
+            current_smoothing_label,
             ifelse(is.finite(current_peak_speed), format(round(current_peak_speed, 3), nsmall = 3), "n/a"),
             ifelse(is.finite(current_speed_floor), format(round(current_speed_floor, 3), nsmall = 3), "n/a"),
             current_seed_count, current_streamline_count,
@@ -1392,6 +1450,9 @@ if (length(earth_common_numbers)) {
   earth_v_native <- apply_current_display_mask_model(
     read_text_model(earth_v_path, basename(earth_v_path))
   )
+  earth_smoothed <- smooth_mean_current_components(earth_u_native, earth_v_native)
+  earth_u_native <- earth_smoothed$u
+  earth_v_native <- earth_smoothed$v
 
   # Use the same compact public x/y resolution as the map products. The
   # current field remains a model-derived display; station files remain exact
@@ -1454,9 +1515,9 @@ if (length(earth_common_numbers)) {
     min_speed_m_s = earth_min_speed,
     max_speed_m_s = ifelse(is.finite(earth_peak_speed), earth_peak_speed, 0),
     particle_count = earth_particle_count,
-    model_time_label = paste0("Latest FUNWAVE Umean/Vmean output; ",
+    model_time_label = paste0("Latest smoothed FUNWAVE Umean/Vmean output; ",
                               metres_label(grid$mean_wave_interval_s[1]),
-                              " s averaging interval"),
+                              " s averaging interval; ", current_smoothing_label),
     credit = "Particle animator adapted from Cameron Beccario's earth (MIT).",
     mit_notice = earth_mit_notice
   )
@@ -1609,6 +1670,9 @@ if (length(earth_common_numbers)) {
   vmean_model <- apply_current_display_mask_model(
     read_text_model(vmean_path, basename(vmean_path))
   )
+  leaflet_velocity_smoothed <- smooth_mean_current_components(umean_model, vmean_model)
+  umean_model <- leaflet_velocity_smoothed$u
+  vmean_model <- leaflet_velocity_smoothed$v
   true_components <- model_components_to_true_en(umean_model, vmean_model)
 
   u_east_om <- apply_current_display_mask_rotated(
@@ -1675,8 +1739,9 @@ if (length(earth_common_numbers)) {
     selected_files = leaflet_velocity_selected_files,
     display_grid = leaflet_velocity_grid,
     model_time_label = paste0(
-      "Latest FUNWAVE Umean/Vmean output; ",
-      metres_label(grid$mean_wave_interval_s[1]), " s averaging interval"
+      "Latest smoothed FUNWAVE Umean/Vmean output; ",
+      metres_label(grid$mean_wave_interval_s[1]), " s averaging interval; ",
+      current_smoothing_label
     ),
     x_bearing_deg = true_components$x_bearing_deg,
     y_bearing_deg = true_components$y_bearing_deg
@@ -1753,12 +1818,14 @@ if (!file.exists(leaflet_velocity_page_path)) {
 leaflet_velocity_debug <- data.frame(
   Diagnostic = c("Paired Umean/Vmean fields", "Selected file(s)",
                  "Leaflet.Velocity display grid", "Peak mean speed (m/s)",
+                 "Spatial smoothing",
                  "Leaflet.Velocity page"),
   Value = c(
     length(earth_common_numbers), leaflet_velocity_selected_files,
     leaflet_velocity_grid,
     ifelse(is.finite(leaflet_velocity_peak_speed),
            format(round(leaflet_velocity_peak_speed, 3), nsmall = 3), "n/a"),
+    current_smoothing_label,
     leaflet_velocity_page_status
   ),
   check.names = FALSE, stringsAsFactors = FALSE

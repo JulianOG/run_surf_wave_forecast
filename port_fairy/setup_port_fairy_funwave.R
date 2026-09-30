@@ -257,8 +257,12 @@ if (public_output_factor_y < 1 ||
 }
 total_time <- 600                # seconds = 10 minutes
 plot_intv <- 15                  # seconds; 40 snapshots including the initial frame
-mean_wave_interval <- 200        # seconds
-steady_time <- 100               # seconds; leaves two complete mean-wave windows
+# FUNWAVE's Umean/Vmean are time-integrated fields, not instantaneous U/V
+# snapshots. A single 480 s post-spin-up window contains many wave periods
+# and completes just before the final 585 s output, reducing residual
+# crest/trough orbital velocity in the published mean-current products.
+mean_wave_interval <- 480        # seconds; 100--580 s mean-current window
+steady_time <- 100               # seconds; omit initial wavemaker spin-up
 grid_tag <- if (abs(dx - dy) < 1e-8) {
   paste0(metres_label(dx), "m")
 } else {
