@@ -202,16 +202,19 @@ buoy_files <- if (historical_run) {
     realtime_paths
   }
 } else {
-  month_starts <- seq(as.Date(format(Sys.time(), "%Y-%m-01")), by = "-1 month", length.out = 3)
-  path <- NULL
-  for (month_index in seq_along(month_starts)) {
-    path <- download_buoy_month(month_starts[month_index], data_dir)
-    if (!is.null(path)) break
-  }
-  if (is.null(path)) {
+  # Keep enough contiguous near-real-time records for the daily report's
+  # trailing seven-day observed-condition plot. At a month boundary, the
+  # preceding archive supplies the early part of that window.
+  month_starts <- seq(as.Date(format(Sys.time(), "%Y-%m-01")), by = "-1 month", length.out = 2)
+  paths <- vapply(month_starts, function(month_start) {
+    path <- download_buoy_month(month_start, data_dir)
+    if (is.null(path)) NA_character_ else path
+  }, character(1))
+  paths <- unname(paths[!is.na(paths)])
+  if (!length(paths)) {
     stop("Could not download a current or previous Port Fairy IMOS monthly file.")
   }
-  path
+  paths
 }
 
 # Model-domain corners in clockwise order, read approximately from the supplied
@@ -439,71 +442,79 @@ if (!is.null(portland_file)) {
   }
 }
 
-# Historical reports include a transparent, interactive observed-condition
-# context: seven days either side of the requested model date. The model still
-# uses only the selected record at or before that date; these CSVs are report
-# context and never alter the forcing or the simulation.
-if (historical_run) {
-  historical_wave <- buoy_records[
-    buoy_records$time_utc >= observation_window_start_utc &
-      buoy_records$time_utc <= observation_window_end_utc,
-    , drop = FALSE
-  ]
-  historical_wave$qc_accepted <- historical_wave$qc %in% c(1, 2)
-  historical_wave$hs_m[!historical_wave$qc_accepted] <- NA_real_
-  historical_wave$tp_s[!historical_wave$qc_accepted] <- NA_real_
-  historical_wave$direction_from_deg_true[!historical_wave$qc_accepted] <- NA_real_
-  historical_wave_output <- data.frame(
-    time_utc = format(historical_wave$time_utc, tz = "UTC", usetz = TRUE),
-    time_local = format(historical_wave$time_utc, tz = "Australia/Melbourne", usetz = TRUE),
-    qc = historical_wave$qc,
-    qc_accepted = historical_wave$qc_accepted,
-    hs_m = historical_wave$hs_m,
-    tp_s = historical_wave$tp_s,
-    direction_from_deg_true = historical_wave$direction_from_deg_true,
-    direction_statistic = historical_wave$boundary_direction_statistic,
-    source_file = historical_wave$source_file,
-    check.names = FALSE, stringsAsFactors = FALSE
-  )
-  write.csv(historical_wave_output,
-            file.path(out_dir, "historical_wave_observations.csv"), row.names = FALSE)
+# Write an observed-condition context for every report. Historical runs retain
+# the requested-time-centred 14-day window; daily forecasts show the available
+# seven days leading up to the selected latest observation. These files are
+# report context only and never alter the FUNWAVE forcing or simulation.
+observation_anchor_utc <- if (historical_run) requested_observation_utc else time_utc[i]
+observation_window_start_utc <- observation_anchor_utc - 7 * 86400
+observation_window_end_utc <- if (historical_run) {
+  observation_anchor_utc + 7 * 86400
+} else {
+  observation_anchor_utc
+}
+observation_mode <- if (historical_run) "historical" else "forecast"
 
-  historical_portland_output <- if (is.null(portland)) {
-    data.frame(
-      time_utc = character(), time_local = character(),
-      water_level_lat_m = numeric(), water_level_ahd_m = numeric(),
-      stringsAsFactors = FALSE
-    )
-  } else {
-    historical_portland <- portland[
-      portland$time_utc >= observation_window_start_utc &
-        portland$time_utc <= observation_window_end_utc,
-      , drop = FALSE
-    ]
-    data.frame(
-      time_utc = format(historical_portland$time_utc, tz = "UTC", usetz = TRUE),
-      time_local = format(historical_portland$time_utc, tz = "Australia/Melbourne", usetz = TRUE),
-      water_level_lat_m = historical_portland$water_level_lat_m,
-      water_level_ahd_m = historical_portland$water_level_ahd_m,
-      stringsAsFactors = FALSE
-    )
-  }
-  write.csv(historical_portland_output,
-            file.path(out_dir, "historical_portland_water_levels.csv"), row.names = FALSE)
+historical_wave <- buoy_records[
+  buoy_records$time_utc >= observation_window_start_utc &
+    buoy_records$time_utc <= observation_window_end_utc,
+  , drop = FALSE
+]
+historical_wave$qc_accepted <- historical_wave$qc %in% c(1, 2)
+historical_wave$hs_m[!historical_wave$qc_accepted] <- NA_real_
+historical_wave$tp_s[!historical_wave$qc_accepted] <- NA_real_
+historical_wave$direction_from_deg_true[!historical_wave$qc_accepted] <- NA_real_
+historical_wave_output <- data.frame(
+  time_utc = format(historical_wave$time_utc, tz = "UTC", usetz = TRUE),
+  time_local = format(historical_wave$time_utc, tz = "Australia/Melbourne", usetz = TRUE),
+  qc = historical_wave$qc,
+  qc_accepted = historical_wave$qc_accepted,
+  hs_m = historical_wave$hs_m,
+  tp_s = historical_wave$tp_s,
+  direction_from_deg_true = historical_wave$direction_from_deg_true,
+  direction_statistic = historical_wave$boundary_direction_statistic,
+  source_file = historical_wave$source_file,
+  check.names = FALSE, stringsAsFactors = FALSE
+)
+write.csv(historical_wave_output,
+          file.path(out_dir, "historical_wave_observations.csv"), row.names = FALSE)
 
-  historical_window_metadata <- data.frame(
-    requested_time_utc = format(requested_observation_utc, tz = "UTC", usetz = TRUE),
-    selected_buoy_time_utc = format(time_utc[i], tz = "UTC", usetz = TRUE),
-    window_start_utc = format(observation_window_start_utc, tz = "UTC", usetz = TRUE),
-    window_end_utc = format(observation_window_end_utc, tz = "UTC", usetz = TRUE),
-    wave_records_qc_1_or_2 = sum(historical_wave_output$qc_accepted),
-    portland_records = nrow(historical_portland_output),
-    portland_datum = "LAT assumed; AHD = LAT - 0.597 m",
+historical_portland_output <- if (is.null(portland)) {
+  data.frame(
+    time_utc = character(), time_local = character(),
+    water_level_lat_m = numeric(), water_level_ahd_m = numeric(),
     stringsAsFactors = FALSE
   )
-  write.csv(historical_window_metadata,
-            file.path(out_dir, "historical_observation_window_metadata.csv"), row.names = FALSE)
+} else {
+  historical_portland <- portland[
+    portland$time_utc >= observation_window_start_utc &
+      portland$time_utc <= observation_window_end_utc,
+    , drop = FALSE
+  ]
+  data.frame(
+    time_utc = format(historical_portland$time_utc, tz = "UTC", usetz = TRUE),
+    time_local = format(historical_portland$time_utc, tz = "Australia/Melbourne", usetz = TRUE),
+    water_level_lat_m = historical_portland$water_level_lat_m,
+    water_level_ahd_m = historical_portland$water_level_ahd_m,
+    stringsAsFactors = FALSE
+  )
 }
+write.csv(historical_portland_output,
+          file.path(out_dir, "historical_portland_water_levels.csv"), row.names = FALSE)
+
+historical_window_metadata <- data.frame(
+  requested_time_utc = format(observation_anchor_utc, tz = "UTC", usetz = TRUE),
+  selected_buoy_time_utc = format(time_utc[i], tz = "UTC", usetz = TRUE),
+  window_start_utc = format(observation_window_start_utc, tz = "UTC", usetz = TRUE),
+  window_end_utc = format(observation_window_end_utc, tz = "UTC", usetz = TRUE),
+  observation_mode = observation_mode,
+  wave_records_qc_1_or_2 = sum(historical_wave_output$qc_accepted),
+  portland_records = nrow(historical_portland_output),
+  portland_datum = "LAT assumed; AHD = LAT - 0.597 m",
+  stringsAsFactors = FALSE
+)
+write.csv(historical_window_metadata,
+          file.path(out_dir, "historical_observation_window_metadata.csv"), row.names = FALSE)
 
 # Map the measured directional spread (degrees) onto FUNWAVE WK_IRR's
 # Sigma_Theta. Keep the documented 20-degree default only when the matching
@@ -890,3 +901,4 @@ message("Wavemaker: Xc_WK=", round(x_wk, 1), " m; ",
         round(source_envelope_width_m, 1), " m active Gaussian envelope (",
         round(source_envelope_cells, 1), " cells); Lp=", round(peak_wavelength_m, 1),
         " m; Delta_WK=", round(delta_wk, 3))
+
