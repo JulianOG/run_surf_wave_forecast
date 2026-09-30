@@ -457,6 +457,9 @@ leaflet_model_map <- function(r_ll, palette, limits, legend_title) {
     overlayGroups = c("Model output", "FUNWAVE grid", "Internal wavemaker", "Buoy", "Transect stations"),
     options = layersControlOptions(collapsed = FALSE)
   )
+  # Both base layers are retained in the selector, but start on imagery so
+  # the coastal morphology is visible without an extra click.
+  m <- leaflet::hideGroup(m, "OpenStreetMap")
   m <- addLegend(m, position = "bottomright", pal = pal, values = limits,
                  title = legend_title, opacity = 0.88)
   m
@@ -1092,8 +1095,8 @@ if (length(current_numbers)) {
     })
     Filter(Negate(is.null), candidates)
   }
-  select_spread_streamlines <- function(candidates, max_paths = 72L,
-                                        min_separation_m = 140) {
+  select_spread_streamlines <- function(candidates, max_paths = 144L,
+                                        min_separation_m = 95) {
     if (!length(candidates)) return(list())
     order_by_length <- order(
       vapply(candidates, function(z) nrow(z$path), integer(1)),
@@ -1189,14 +1192,14 @@ if (length(current_numbers)) {
     "var map=this;if(!map||typeof map.getPanes!=='function')map=this.map||this._map;",
     "if(!map||typeof map.getPanes!=='function'){console.error('Leaflet map was not available for option 1 streamlines');return;}",
     "var bounds=L.latLngBounds(data.bounds),lines=data.lines||[];",
-    "var osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);",
-    "var satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri'});",
+    "var osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'});",
+    "var satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri'}).addTo(map);",
     "var paths=L.layerGroup().addTo(map),particles=L.layerGroup().addTo(map);",
     "var grid=L.polyline(data.outline,{color:'black',weight:2}),paddle=L.polyline(data.source,{color:'dodgerblue',weight:2,dashArray:'6 6'}),buoy=L.circleMarker(data.buoy,{radius:5,color:'red',fillOpacity:1});",
     "grid.addTo(map);paddle.addTo(map);buoy.addTo(map);map.fitBounds(bounds,{padding:[4,4]});map.setMaxBounds(bounds);",
     "L.control.layers({'OpenStreetMap':osm,'Satellite imagery':satellite},{'Option 1 flow paths':paths,'Option 1 moving dots':particles,'FUNWAVE grid':grid,'Internal wavemaker':paddle,'Buoy':buoy},{collapsed:false}).addTo(map);",
-    "function panel(position,text){var c=L.control({position:position});c.onAdd=function(){var d=L.DomUtil.create('div');d.style.background='rgba(255,255,255,.92)';d.style.padding='6px';d.style.font='12px Arial';d.style.whiteSpace='pre-line';d.textContent=text;return d;};c.addTo(map);}",
-    "panel('bottomleft',data.label);panel('topright',data.debug);",
+    "function panel(position,text){var c=L.control({position:position});c.onAdd=function(){var d=L.DomUtil.create('div');d.style.background='rgba(255,255,255,.92)';d.style.padding='6px 8px';d.style.font='12px/1.3 Arial';d.style.whiteSpace='pre-line';d.style.maxWidth='240px';d.style.maxHeight='135px';d.style.overflowY='auto';d.style.boxSizing='border-box';d.style.marginBottom='24px';d.textContent=text;return d;};c.addTo(map);}",
+    "panel('bottomleft',data.label);panel('bottomright',data.debug);",
     "var dots=[];lines.forEach(function(line){if(line&&line.length>1){L.polyline(line,{color:'#2c7fb8',weight:1.2,opacity:.72}).addTo(paths);dots.push({line:line,marker:L.circleMarker(line[0],{radius:3,color:'#08306b',weight:0,fillOpacity:.95}).addTo(particles)});}});",
     "if(dots.length){function animate(t){dots.forEach(function(item,i){var q=((t/6500)+(i/dots.length))%1*(item.line.length-1),j=Math.floor(q),a=item.line[j],b=item.line[Math.min(j+1,item.line.length-1)],f=q-j;item.marker.setLatLng([a[0]+f*(b[0]-a[0]),a[1]+f*(b[1]-a[1])]);});window.requestAnimationFrame(animate);}window.requestAnimationFrame(animate);}",
     "window.setTimeout(function(){map.invalidateSize();map.fitBounds(bounds,{padding:[4,4]});},250);",
@@ -1262,8 +1265,8 @@ if (length(current_numbers)) {
     "var FlowTrails=L.Layer.extend({initialize:function(){this._running=false;},onAdd:function(m){this._map=m;this._canvas=L.DomUtil.create('canvas','leaflet-zoom-animated',m.getPanes().overlayPane);this._canvas.style.pointerEvents='none';this._canvas.style.zIndex=650;this._resize();m.on('resize moveend zoomend',this._resize,this);this._running=true;this._last=performance.now();this._frame=window.requestAnimationFrame(this._animate.bind(this));},onRemove:function(m){this._running=false;window.cancelAnimationFrame(this._frame);m.off('resize moveend zoomend',this._resize,this);L.DomUtil.remove(this._canvas);this._map=null;},_resize:function(){if(!this._map||!this._canvas)return;var s=this._map.getSize(),d=window.devicePixelRatio||1;this._canvas.width=Math.max(1,Math.round(s.x*d));this._canvas.height=Math.max(1,Math.round(s.y*d));this._canvas.style.width=s.x+'px';this._canvas.style.height=s.y+'px';this._topLeft=this._map.containerPointToLayerPoint([0,0]);L.DomUtil.setPosition(this._canvas,this._topLeft);this._ctx=this._canvas.getContext('2d');this._ctx.setTransform(d,0,0,d,0,0);},_animate:function(t){if(!this._running)return;var dt=Math.min(.08,Math.max(.005,(t-this._last)/1000));this._last=t;var ctx=this._ctx,s=this._map.getSize();ctx.clearRect(0,0,s.x,s.y);ctx.lineCap='round';particles.forEach(function(p){p.distance+=dt*180;if(p.distance>p.route.length+220)p.distance=-Math.random()*220;var trail=[];for(var d=p.distance-220;d<=p.distance;d+=10){var ll=pointAt(p.route,d);if(ll)trail.push(ll);}if(trail.length<2)return;ctx.beginPath();trail.forEach(function(ll,k){var pt=map.latLngToLayerPoint(ll),px=pt.x-this._topLeft.x,py=pt.y-this._topLeft.y;if(k===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);},this);ctx.strokeStyle='rgba(8,48,107,0.78)';ctx.lineWidth=1.45;ctx.stroke();var head=trail[trail.length-1],hp=map.latLngToLayerPoint(head);ctx.fillStyle='rgba(44,127,184,0.98)';ctx.beginPath();ctx.arc(hp.x-this._topLeft.x,hp.y-this._topLeft.y,2.3,0,Math.PI*2);ctx.fill();},this);this._frame=window.requestAnimationFrame(this._animate.bind(this));}});",
     "var flowTrails=new FlowTrails();flowTrails.addTo(map);",
     "L.control.layers({}, {'Flowing particle trails':flowTrails},{collapsed:false}).addTo(map);",
-    "function panel(position,text){var c=L.control({position:position});c.onAdd=function(){var d=L.DomUtil.create('div');d.style.background='rgba(255,255,255,.92)';d.style.padding='6px';d.style.font='12px Arial';d.style.whiteSpace='pre-line';d.textContent=text;return d;};c.addTo(map);}",
-    "panel('bottomleft',data.label);panel('topright',data.debug);",
+    "function panel(position,text){var c=L.control({position:position});c.onAdd=function(){var d=L.DomUtil.create('div');d.style.background='rgba(255,255,255,.92)';d.style.padding='6px 8px';d.style.font='12px/1.3 Arial';d.style.whiteSpace='pre-line';d.style.maxWidth='240px';d.style.maxHeight='135px';d.style.overflowY='auto';d.style.boxSizing='border-box';d.style.marginBottom='24px';d.textContent=text;return d;};c.addTo(map);}",
+    "panel('bottomleft',data.label);panel('bottomright',data.debug);",
     "window.setTimeout(function(){map.invalidateSize();map.fitBounds(bounds,{padding:[4,4]});map.setMaxBounds(bounds);},250);",
     "}"
   )
@@ -1301,6 +1304,7 @@ if (length(current_numbers)) {
     overlayGroups = c("Mean-flow paths", "FUNWAVE grid", "Internal wavemaker", "Buoy"),
     options = leaflet::layersControlOptions(collapsed = FALSE)
   )
+  option2_widget <- leaflet::hideGroup(option2_widget, "OpenStreetMap")
   option2_widget <- htmlwidgets::onRender(option2_widget, option2_js, data = option2_data)
   current_particle_page_status <- tryCatch({
     htmlwidgets::saveWidget(option2_widget, current_particle_page_path, selfcontained = TRUE)
@@ -1398,6 +1402,14 @@ earth_peak_speed <- NA_real_
 earth_min_speed <- NA_real_
 earth_display_grid <- "n/a"
 earth_particle_count <- 0L
+earth_speed_colour_cap_m_s <- 0.20
+earth_speed_colours <- rev(c(
+  "#000078", "#0000BB", "#0000FF", "#0C3AFC", "#1975FA", "#25B0F7",
+  "#32EBF5", "#73EEE6", "#B4F1D7", "#F5F5C8", "#F5F564", "#F5E032",
+  "#F6CC00", "#F7A300", "#F97A00", "#FB5100", "#FF0000", "#DA0006",
+  "#B5000D", "#910014", "#7B003D", "#660066", "#88008C", "#AB00B2",
+  "#CD00D8", "#F000FF", "#CAA6DE", "#DBA7DD", "#EDA9D2"
+))
 
 earth_mit_notice <- paste(
   "The MIT License (MIT)",
@@ -1499,9 +1511,9 @@ if (length(earth_common_numbers)) {
   earth_corner_latlng <- lapply(seq_len(nrow(earth_corner_ll)), function(k) {
     unname(as.numeric(earth_corner_ll[k, c(2, 1)]))
   })
-  # A fixed, moderate density keeps the browser responsive while ensuring the
-  # local field is visibly populated rather than clustered around fast cells.
-  earth_particle_count <- 900L
+  # This uses a canvas, so a dense, domain-wide set of trajectories remains
+  # responsive.  The particles are seeded throughout valid display cells.
+  earth_particle_count <- 2700L
   earth_data <- list(
     bounds = earth_bounds,
     outline = earth_outline_latlng,
@@ -1515,6 +1527,8 @@ if (length(earth_common_numbers)) {
     min_speed_m_s = earth_min_speed,
     max_speed_m_s = ifelse(is.finite(earth_peak_speed), earth_peak_speed, 0),
     particle_count = earth_particle_count,
+    speed_colour_cap_m_s = earth_speed_colour_cap_m_s,
+    speed_colours = unname(earth_speed_colours),
     model_time_label = paste0("Latest smoothed FUNWAVE Umean/Vmean output; ",
                               metres_label(grid$mean_wave_interval_s[1]),
                               " s averaging interval; ", current_smoothing_label),
@@ -1531,16 +1545,18 @@ if (length(earth_common_numbers)) {
     "function bilerp(a,b,c,d,fx,fy){return a*(1-fx)*(1-fy)+b*fx*(1-fy)+c*(1-fx)*fy+d*fx*fy;}",
     "function vectorAt(px,py){if(!(px>=0&&py>=0&&px<nx-1&&py<ny-1))return null;var i=Math.floor(px),j=Math.floor(py),fx=px-i,fy=py-j;var u00=u[i][j],u10=u[i+1][j],u01=u[i][j+1],u11=u[i+1][j+1],v00=v[i][j],v10=v[i+1][j],v01=v[i][j+1],v11=v[i+1][j+1];if(!finite(u00)||!finite(u10)||!finite(u01)||!finite(u11)||!finite(v00)||!finite(v10)||!finite(v01)||!finite(v11))return null;var ux=bilerp(u00,u10,u01,u11,fx,fy),vy=bilerp(v00,v10,v01,v11,fx,fy);return {u:ux,v:vy,m:Math.sqrt(ux*ux+vy*vy)};}",
     "function modelToLatLng(px,py){var fx=Math.max(0,Math.min(1,px/(nx-1))),fy=Math.max(0,Math.min(1,py/(ny-1))),c=data.corners;return [bilerp(c[0][0],c[1][0],c[3][0],c[2][0],fx,fy),bilerp(c[0][1],c[1][1],c[3][1],c[2][1],fx,fy)];}",
-    "var osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);",
-    "var satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri'});",
+    "var osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'});",
+    "var satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri'}).addTo(map);",
     "var grid=L.polyline(data.outline,{color:'black',weight:2}),paddle=L.polyline(data.source,{color:'dodgerblue',weight:2,dashArray:'6 6'}),buoy=L.circleMarker(data.buoy,{radius:5,color:'red',fillOpacity:1});",
     "grid.addTo(map);paddle.addTo(map);buoy.addTo(map);map.fitBounds(bounds,{padding:[4,4]});map.setMaxBounds(bounds);",
-    "function panel(position,text){var c=L.control({position:position});c.onAdd=function(){var d=L.DomUtil.create('div');d.style.background='rgba(255,255,255,.92)';d.style.padding='6px';d.style.font='12px Arial';d.style.whiteSpace='pre-line';d.textContent=text;return d;};c.addTo(map);return c;}",
-    "panel('bottomleft',data.model_time_label+'\\nDisplay field: '+data.dx_m+' m x '+data.dy_m+' m\\nParticle speed is visual only.');panel('bottomright',data.credit);",
-    "var MAX_PARTICLE_AGE=300,DISPLAY_TIME_SCALE=24000,particleCount=Math.max(450,Math.min(1100,data.particle_count||900));",
+    "function panel(position,text){var c=L.control({position:position});c.onAdd=function(){var d=L.DomUtil.create('div');d.style.background='rgba(255,255,255,.92)';d.style.padding='6px 8px';d.style.font='12px/1.3 Arial';d.style.whiteSpace='pre-line';d.style.maxWidth='250px';d.style.maxHeight='110px';d.style.overflowY='auto';d.style.boxSizing='border-box';d.style.marginBottom='24px';d.textContent=text;return d;};c.addTo(map);return c;}",
+    "panel('bottomleft',data.model_time_label+'\\nDisplay field: '+data.dx_m+' m x '+data.dy_m+' m\\nColour: mean-current speed; values above 0.20 m/s are capped.');map.attributionControl.addAttribution(data.credit);",
+    "var MAX_PARTICLE_AGE=300,DISPLAY_TIME_SCALE=24000,particleCount=Math.max(450,Number(data.particle_count)||2700);",
     "var EarthFlowLayer=L.Layer.extend({initialize:function(){this._running=false;this._particles=[];},onAdd:function(m){this._map=m;this._canvas=L.DomUtil.create('canvas','leaflet-zoom-animated',m.getPanes().overlayPane);this._canvas.style.pointerEvents='none';this._canvas.style.zIndex=650;this._resize();m.on('resize moveend zoomend',this._resize,this);for(var k=0;k<particleCount;k++)this._particles.push(this._randomize({age:Math.random()*MAX_PARTICLE_AGE}));this._running=true;this._last=performance.now();this._frame=window.requestAnimationFrame(this._animate.bind(this));},onRemove:function(m){this._running=false;window.cancelAnimationFrame(this._frame);m.off('resize moveend zoomend',this._resize,this);L.DomUtil.remove(this._canvas);this._map=null;},_resize:function(){if(!this._map||!this._canvas)return;var s=this._map.getSize(),d=window.devicePixelRatio||1;this._canvas.width=Math.max(1,Math.round(s.x*d));this._canvas.height=Math.max(1,Math.round(s.y*d));this._canvas.style.width=s.x+'px';this._canvas.style.height=s.y+'px';this._topLeft=this._map.containerPointToLayerPoint([0,0]);L.DomUtil.setPosition(this._canvas,this._topLeft);this._ctx=this._canvas.getContext('2d');this._ctx.setTransform(d,0,0,d,0,0);},_randomize:function(p){for(var n=0;n<1600;n++){p.x=Math.random()*(nx-1);p.y=Math.random()*(ny-1);var w=vectorAt(p.x,p.y);if(w&&w.m>=data.min_speed_m_s){p.age=Math.random()*MAX_PARTICLE_AGE;return p;}}p.age=MAX_PARTICLE_AGE+1;return p;},_colour:function(m){var q=Math.max(0,Math.min(1,m/Math.max(data.max_speed_m_s,1e-6)));if(q<.25)return '#ffffcc';if(q<.5)return '#a1dab4';if(q<.75)return '#41b6c4';return '#225ea8';},_animate:function(now){if(!this._running)return;var dt=Math.min(.05,Math.max(.001,(now-this._last)/1000));this._last=now;var ctx=this._ctx,s=this._map.getSize(),self=this;var previous=ctx.globalCompositeOperation;ctx.globalCompositeOperation='destination-in';ctx.fillStyle='rgba(0,0,0,0.96)';ctx.fillRect(0,0,s.x,s.y);ctx.globalCompositeOperation=previous;ctx.lineWidth=1.2;ctx.lineCap='round';this._particles.forEach(function(p){if(p.age>MAX_PARTICLE_AGE)self._randomize(p);var w=vectorAt(p.x,p.y);if(!w||w.m<data.min_speed_m_s){p.age=MAX_PARTICLE_AGE+1;return;}var stepM=Math.max(1.5,Math.min(18,w.m*dt*DISPLAY_TIME_SCALE)),mx=p.x+0.5*stepM*w.u/w.m/data.dx_m,my=p.y+0.5*stepM*w.v/w.m/data.dy_m,mid=vectorAt(mx,my)||w,xt=p.x+stepM*mid.u/mid.m/data.dx_m,yt=p.y+stepM*mid.v/mid.m/data.dy_m,next=vectorAt(xt,yt);if(!next||next.m<data.min_speed_m_s){p.age=MAX_PARTICLE_AGE+1;return;}var a=modelToLatLng(p.x,p.y),b=modelToLatLng(xt,yt),pa=map.latLngToLayerPoint(a),pb=map.latLngToLayerPoint(b);ctx.beginPath();ctx.strokeStyle=self._colour(w.m);ctx.moveTo(pa.x-self._topLeft.x,pa.y-self._topLeft.y);ctx.lineTo(pb.x-self._topLeft.x,pb.y-self._topLeft.y);ctx.stroke();p.x=xt;p.y=yt;p.age+=dt*60;});this._frame=window.requestAnimationFrame(this._animate.bind(this));}});",
+    "EarthFlowLayer.prototype._colour=function(m){var colours=data.speed_colours||['#EDA9D2','#000078'],cap=Math.max(1e-6,Number(data.speed_colour_cap_m_s)||0.20),q=Math.max(0,Math.min(1,m/cap)),index=Math.min(colours.length-1,Math.round(q*(colours.length-1)));return colours[index];};",
     "var earthFlow=new EarthFlowLayer();earthFlow.addTo(map);",
     "L.control.layers({'OpenStreetMap':osm,'Satellite imagery':satellite},{'Earth-style mean-current particles':earthFlow,'FUNWAVE grid':grid,'Internal wavemaker':paddle,'Buoy':buoy},{collapsed:false}).addTo(map);",
+    "var speedLegend=L.control({position:'bottomright'});speedLegend.onAdd=function(){var d=L.DomUtil.create('div');d.style.background='rgba(255,255,255,.92)';d.style.padding='6px 8px';d.style.font='12px Arial';d.style.lineHeight='1.25';d.style.marginBottom='24px';d.style.maxWidth='210px';var colours=data.speed_colours||[];var swatches='';for(var i=0;i<colours.length;i++){swatches+='<i style=\"display:inline-block;width:7px;height:14px;background:'+colours[i]+'\"></i>';}d.innerHTML='<b>Mean current speed (m/s)</b><br><span style=\"float:left\">0</span><span style=\"float:right\">0.20+ capped</span><br><span style=\"display:flex;clear:both\">'+swatches+'</span>';return d;};speedLegend.addTo(map);",
     "window.setTimeout(function(){map.invalidateSize();map.fitBounds(bounds,{padding:[4,4]});map.setMaxBounds(bounds);},250);",
     "}"
   )
@@ -1743,8 +1759,10 @@ if (length(earth_common_numbers)) {
       metres_label(grid$mean_wave_interval_s[1]), " s averaging interval; ",
       current_smoothing_label
     ),
-    x_bearing_deg = true_components$x_bearing_deg,
-    y_bearing_deg = true_components$y_bearing_deg
+    # `atan2()` retains a name from the local axis vector. Drop that name so
+    # htmlwidgets serializes a JavaScript number rather than an object.
+    x_bearing_deg = unname(as.numeric(true_components$x_bearing_deg)[1]),
+    y_bearing_deg = unname(as.numeric(true_components$y_bearing_deg)[1])
   )
   velocity_js <- paste0(
     "function(el, x, data) {",
@@ -1752,13 +1770,12 @@ if (length(earth_common_numbers)) {
     "if(!map||typeof map.getPanes!=='function'){console.error('Leaflet map was not available for Leaflet.Velocity');return;}",
     "if(typeof L.velocityLayer!=='function'){console.error('Leaflet.Velocity dependency was not loaded');return;}",
     "var bounds=L.latLngBounds(data.bounds);",
-    "var osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);",
-    "var satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri'});",
+    "var osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'});",
+    "var satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri'}).addTo(map);",
     "var grid=L.polyline(data.outline,{color:'black',weight:2}),paddle=L.polyline(data.source,{color:'dodgerblue',weight:2,dashArray:'6 6'}),buoy=L.circleMarker(data.buoy,{radius:5,color:'red',fillOpacity:1});",
     "grid.addTo(map);paddle.addTo(map);buoy.addTo(map);",
     "var flow=L.velocityLayer({data:data.data,displayValues:true,displayOptions:{velocityType:'Time-mean current',position:'bottomleft',emptyString:'No mean-current data',angleConvention:'bearingCW',showCardinal:true,speedUnit:'ms',directionString:'toward',speedString:'speed'},minVelocity:0,maxVelocity:data.max_velocity,velocityScale:0.08,particleAge:80,particleMultiplier:1/450,frameRate:30,colorScale:['#ffffcc','#c7e9b4','#7fcdbb','#41b6c4','#1d91c0','#225ea8'],opacity:0.92}).addTo(map);",
-    "function panel(position,text){var c=L.control({position:position});c.onAdd=function(){var d=L.DomUtil.create('div','leaflet-control-velocity');d.style.whiteSpace='pre-line';d.textContent=text;return d;};c.addTo(map);return c;}",
-    "panel('topright',data.model_time_label+'\\n'+data.display_grid+'\\nModel x bearing: '+data.x_bearing_deg.toFixed(1)+'°; y bearing: '+data.y_bearing_deg.toFixed(1)+'°');",
+    "map.attributionControl.addAttribution(data.model_time_label+'; '+data.display_grid);",
     "L.control.layers({'OpenStreetMap':osm,'Satellite imagery':satellite},{'Leaflet.Velocity mean current':flow,'FUNWAVE grid':grid,'Internal wavemaker':paddle,'Buoy':buoy},{collapsed:false}).addTo(map);",
     "window.setTimeout(function(){map.invalidateSize();map.fitBounds(bounds,{padding:[4,4]});map.setMaxBounds(bounds);},250);",
     "}"
