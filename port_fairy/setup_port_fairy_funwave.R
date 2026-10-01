@@ -801,6 +801,16 @@ freq_peak <- 1 / tp[i]
 freq_min <- max(0.04, freq_peak / 2.5)
 freq_max <- min(0.50, freq_peak * 3)
 
+# FUNWAVE interprets Time_ramp as a number of peak periods, not seconds.
+# Preserve the observed Hs, including severe seas, but introduce energetic
+# cases gradually enough that the internal wavemaker does not create a large
+# start-up transient in the wetting/drying zone. At 600 s a 20-Tp ramp for the
+# 5.29 m, 20.5 s historical case is effectively at full amplitude (0.9998).
+high_energy_case <- is.finite(hs[i]) && hs[i] >= 4
+time_ramp_periods <- if (high_energy_case) 20 else 10
+time_ramp_seconds <- time_ramp_periods / freq_peak
+time_ramp_end_amplitude <- tanh(pi * total_time / time_ramp_seconds)
+
 # Match FUNWAVE-TVD's Boussinesq dispersion relation when calculating the
 # peak wavelength at the wavemaker depth.
 funwave_peak_wavelength <- function(depth_m, frequency_hz) {
@@ -924,7 +934,7 @@ input <- c(
   sprintf("Xc_WK = %.1f", x_wk),
   sprintf("Yc_WK = %.1f", y_wk),
   sprintf("Ywidth_WK = %.1f", ywidth_wk),
-  "Time_ramp = 10.0",
+  sprintf("Time_ramp = %.1f", time_ramp_periods),
   sprintf("Delta_WK = %.5f", delta_wk),
   sprintf("FreqPeak = %.5f", freq_peak),
   sprintf("FreqMin = %.5f", freq_min), sprintf("FreqMax = %.5f", freq_max),
@@ -938,12 +948,12 @@ input <- c(
   sprintf("Sponge_east_width = %.1f", sponge_east_width),
   sprintf("Sponge_south_width = %.1f", lateral_sponge_width),
   sprintf("Sponge_north_width = %.1f", lateral_sponge_width),
-  # A 1 cm wet/dry threshold was unstable for the energetic historical case:
-  # shallow DEM films produced extreme eta/velocity before 80 s. Use 5 cm for
-  # both wetting/drying and the bottom-friction limiter, so shallow cells are
-  # not treated inconsistently by the two controls.
+  # MinDepth sets the wet/dry rule; MinDepthFrc is the numerical depth floor
+  # in the momentum/CFL/friction calculations. Retain FUNWAVE's 10 cm
+  # MinDepthFrc default for a stable numerical floor without artificially
+  # moving the 1 cm wet/dry shoreline threshold offshore.
   "Cd = 0.002", "CFL = 0.5", "FroudeCap = 1.0",
-  "MinDepth = 0.05", "MinDepthFrc = 0.05",
+  "MinDepth = 0.01", "MinDepthFrc = 0.10",
   "VISCOSITY_BREAKING = T", "Cbrk1 = 0.65", "Cbrk2 = 0.35",
   # The public current pages use time-mean currents. Do not write
   # phase-resolved U/V snapshots: they are wave-orbital velocities, not the
@@ -976,6 +986,11 @@ grid_info <- data.frame(
   funwave_width_wk_half_width_m = funwave_width_wk_m,
   peak_wavelength_m = peak_wavelength_m,
   delta_wk = delta_wk,
+  time_ramp_periods = time_ramp_periods,
+  time_ramp_seconds = time_ramp_seconds,
+  time_ramp_end_amplitude = time_ramp_end_amplitude,
+  min_depth_m = 0.01,
+  min_depth_frc_m = 0.10,
   far_sponge_width_m = far_x_sponge,
   lateral_sponge_width_m = lateral_sponge_width,
   funwave_theta_peak_deg = theta_peak,
@@ -1004,6 +1019,9 @@ message("Wavemaker: Xc_WK=", round(x_wk, 1), " m; ",
         round(source_envelope_width_m, 1), " m active Gaussian envelope (",
         round(source_envelope_cells, 1), " cells); Lp=", round(peak_wavelength_m, 1),
         " m; Delta_WK=", round(delta_wk, 3))
-
+message("Wavemaker ramp: ", time_ramp_periods, " peak periods (",
+        round(time_ramp_seconds, 1), " s); amplitude factor at ", total_time,
+        " s = ", format(round(time_ramp_end_amplitude, 4), nsmall = 4),
+        if (high_energy_case) " [high-energy Hs >= 4 m]" else "")
 
 

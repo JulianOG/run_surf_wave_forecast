@@ -60,17 +60,21 @@ The case uses:
 | --- | --- |
 | Bottom drag, Cd | 0.002 |
 | CFL | 0.5 |
-| Wet/dry minimum depth, MinDepth | 0.05 m |
-| Friction minimum depth, MinDepthFrc | 0.05 m |
+| Wet/dry minimum depth, MinDepth | 0.01 m |
+| Numerical depth floor, MinDepthFrc | 0.10 m |
 | Breaking | Eddy-viscosity scheme; Cbrk1 = 0.65, Cbrk2 = 0.35 |
 | Wavemaker cross-shore envelope | 50 m, clear of the source-side sponge |
+| Wavemaker ramp | 10 peak periods; 20 peak periods when Hs is 4 m or greater |
 | Output interval | 15 s |
 | Mean-current averaging window | 480 s after a 100 s spin-up |
 
-The matched 5 cm shallow-water controls are deliberately more conservative
-than the former 1 cm wet/dry threshold. The latter became unstable in an
-energetic historical case by admitting very thin DEM-scale water films while
-the friction limiter remained at a different depth.
+`MinDepth` controls wetting and drying; `MinDepthFrc` is the numerical depth
+floor used in momentum, CFL and bottom-friction calculations. They are
+intentionally different: the case retains the 1 cm shoreline threshold and
+FUNWAVE's 10 cm numerical floor. For severe observed seas (`Hs >= 4 m`), the
+20-peak-period ramp delays the source start-up without reducing the observed
+wave height. In the 10-minute case, the 5.29 m, 20.5 s historical sea state
+reaches 99.98% of its requested amplitude by the end of the simulation.
 
 ## Data
 
@@ -119,4 +123,3 @@ project, supported by the Australian Research Data Commons (ARDC):
 Suggested citation: Deakin University [year of data downloaded], *Wave buoys
 Observations – Australia – near real-time*, downloaded from the relevant IMOS
 URL on the date of download.
-
