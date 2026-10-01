@@ -811,6 +811,12 @@ time_ramp_periods <- if (high_energy_case) 20 else 10
 time_ramp_seconds <- time_ramp_periods / freq_peak
 time_ramp_end_amplitude <- tanh(pi * total_time / time_ramp_seconds)
 
+# In this pinned FUNWAVE-TVD revision, MinDepth and MinDepthFrc are both
+# replaced with their smaller value during input parsing. They must therefore
+# be equal. A 0.10 m floor was the stable pre-change configuration; it governs
+# wetting/drying and shallow-water numerics but does not reduce the imposed Hs.
+min_depth_m <- 0.10
+
 # Match FUNWAVE-TVD's Boussinesq dispersion relation when calculating the
 # peak wavelength at the wavemaker depth.
 funwave_peak_wavelength <- function(depth_m, frequency_hz) {
@@ -948,12 +954,11 @@ input <- c(
   sprintf("Sponge_east_width = %.1f", sponge_east_width),
   sprintf("Sponge_south_width = %.1f", lateral_sponge_width),
   sprintf("Sponge_north_width = %.1f", lateral_sponge_width),
-  # MinDepth sets the wet/dry rule; MinDepthFrc is the numerical depth floor
-  # in the momentum/CFL/friction calculations. Retain FUNWAVE's 10 cm
-  # MinDepthFrc default for a stable numerical floor without artificially
-  # moving the 1 cm wet/dry shoreline threshold offshore.
+  # FUNWAVE merges MinDepth and MinDepthFrc to their smaller value. Keep both
+  # at the stable 10 cm value, rather than inadvertently using a 1 cm floor.
   "Cd = 0.002", "CFL = 0.5", "FroudeCap = 1.0",
-  "MinDepth = 0.01", "MinDepthFrc = 0.10",
+  sprintf("MinDepth = %.2f", min_depth_m),
+  sprintf("MinDepthFrc = %.2f", min_depth_m),
   "VISCOSITY_BREAKING = T", "Cbrk1 = 0.65", "Cbrk2 = 0.35",
   # The public current pages use time-mean currents. Do not write
   # phase-resolved U/V snapshots: they are wave-orbital velocities, not the
@@ -989,8 +994,8 @@ grid_info <- data.frame(
   time_ramp_periods = time_ramp_periods,
   time_ramp_seconds = time_ramp_seconds,
   time_ramp_end_amplitude = time_ramp_end_amplitude,
-  min_depth_m = 0.01,
-  min_depth_frc_m = 0.10,
+  min_depth_m = min_depth_m,
+  min_depth_frc_m = min_depth_m,
   far_sponge_width_m = far_x_sponge,
   lateral_sponge_width_m = lateral_sponge_width,
   funwave_theta_peak_deg = theta_peak,
@@ -1023,5 +1028,4 @@ message("Wavemaker ramp: ", time_ramp_periods, " peak periods (",
         round(time_ramp_seconds, 1), " s); amplitude factor at ", total_time,
         " s = ", format(round(time_ramp_end_amplitude, 4), nsmall = 4),
         if (high_energy_case) " [high-energy Hs >= 4 m]" else "")
-
 

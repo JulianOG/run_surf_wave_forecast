@@ -60,21 +60,20 @@ The case uses:
 | --- | --- |
 | Bottom drag, Cd | 0.002 |
 | CFL | 0.5 |
-| Wet/dry minimum depth, MinDepth | 0.01 m |
-| Numerical depth floor, MinDepthFrc | 0.10 m |
+| Wet/dry and numerical minimum depth | 0.10 m |
 | Breaking | Eddy-viscosity scheme; Cbrk1 = 0.65, Cbrk2 = 0.35 |
 | Wavemaker cross-shore envelope | 50 m, clear of the source-side sponge |
 | Wavemaker ramp | 10 peak periods; 20 peak periods when Hs is 4 m or greater |
 | Output interval | 15 s |
 | Mean-current averaging window | 480 s after a 100 s spin-up |
 
-`MinDepth` controls wetting and drying; `MinDepthFrc` is the numerical depth
-floor used in momentum, CFL and bottom-friction calculations. They are
-intentionally different: the case retains the 1 cm shoreline threshold and
-FUNWAVE's 10 cm numerical floor. For severe observed seas (`Hs >= 4 m`), the
-20-peak-period ramp delays the source start-up without reducing the observed
-wave height. In the 10-minute case, the 5.29 m, 20.5 s historical sea state
-reaches 99.98% of its requested amplitude by the end of the simulation.
+In the pinned FUNWAVE-TVD revision, `MinDepth` and `MinDepthFrc` are merged to
+their smaller value during input parsing. They therefore have to be equal. The
+case uses a 10 cm wet/dry and numerical floor; it does not reduce the imposed
+wave height. For severe observed seas (`Hs >= 4 m`), the 20-peak-period ramp
+delays source start-up without reducing the observed forcing. In the 10-minute
+case, the 5.29 m, 20.5 s historical sea state reaches 99.98% of its requested
+amplitude by the end of the simulation.
 
 ## Data
 

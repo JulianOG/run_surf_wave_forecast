@@ -88,7 +88,7 @@ an unrelated tide observation.
 
 | Control | Value | Role |
 | --- | --- | --- |
-| MinDepth | 0.01 m | Wet/dry threshold |
+| MinDepth | 0.10 m | Wet/dry threshold |
 | MinDepthFrc | 0.10 m | Numerical depth floor in momentum, CFL and friction terms |
 | Cd | 0.002 | Quadratic bottom drag |
 | CFL | 0.5 | Adaptive time-step control |
@@ -96,13 +96,13 @@ an unrelated tide observation.
 | VISCOSITY_BREAKING | T | Eddy-viscosity breaking option |
 | Cbrk1, Cbrk2 | 0.65, 0.35 | Breaking coefficients |
 
-MinDepth and MinDepthFrc have different roles and are intentionally not
-matched. `MinDepth = 0.01 m` retains the wet/dry shoreline rule, while
-`MinDepthFrc = 0.10 m` retains FUNWAVE's numerical depth floor. This avoids
-artificially moving the waterline offshore while protecting the thin-water
-momentum and CFL calculations. Severe observed seas (`Hs >= 4 m`) use a
-20-peak-period source ramp rather than the normal 10 peak periods; this
-reduces only the start-up transient and does not cap the requested Hs.
+`MinDepth` and `MinDepthFrc` have different conceptual roles, but this pinned
+FUNWAVE-TVD revision merges them to their smaller value during input parsing.
+They must therefore be set identically. The case uses 0.10 m for both, so
+thin-water momentum, CFL and wet/dry calculations share a real numerical
+floor. Severe observed seas (`Hs >= 4 m`) use a 20-peak-period source ramp
+rather than the normal 10 peak periods; this reduces only the start-up
+transient and does not cap the requested Hs.
 
 ## Outputs and display rules
 
@@ -159,7 +159,7 @@ sensitivities, not Port Fairy calibration:
 | Wavemaker | WK_IRR | WK_IRR | WK_NEW_IRR |
 | Cd | 0.002 | 0.002 | 0.002 |
 | CFL | 0.5 | 0.15 | 0.05 |
-| MinDepth | 0.01 m | 0.001 m | 0.001 m |
+| MinDepth | 0.10 m | 0.001 m | 0.001 m |
 | Breaking viscosity | T | T | F |
 
 The [FUNWAVE-TVD examples and benchmarks](https://github.com/fengyanshi/FUNWAVE-TVD/tree/master/benchmarks)
