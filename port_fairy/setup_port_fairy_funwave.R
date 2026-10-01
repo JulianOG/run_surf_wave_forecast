@@ -787,6 +787,22 @@ source_gap_after_sponge <- 60
 source_envelope_width_m <- 50        # full span from -2 to +2 e-folds
 source_e_fold_half_width_m <- source_envelope_width_m / 4
 
+# Do not force the internal source through the shallow south-west headland
+# embayment highlighted in the Port Fairy source-geometry review.  These are
+# geographic coordinates, so the exclusion remains over the same physical
+# area even though the Omerc grid is re-oriented for each observed direction.
+# WK_IRR can use one continuous y segment only; the code below therefore
+# selects the longest eligible open-water segment outside this polygon.
+source_exclusion_label <- "south-west headland exclusion"
+source_exclusion_ll <- rbind(
+  c(142.2400, -38.4010),
+  c(142.2560, -38.4010),
+  c(142.2560, -38.3900),
+  c(142.2490, -38.3890),
+  c(142.2430, -38.3920),
+  c(142.2400, -38.4010)
+)
+
 # FUNWAVE defines Width_WK = Delta_WK * Lp / 2. For a 50 m active envelope,
 # the corresponding FUNWAVE width parameter is 55.9 m. Its upstream edge is
 # 60 m clear of the 100 m source-side sponge; the paddle centre is therefore
@@ -836,25 +852,121 @@ funwave_peak_wavelength <- function(depth_m, frequency_hz) {
   2 * pi / wavenumber
 }
 
-# Use the median water depth at the actual wavemaker strip for DEP_WK. A source
-# needs finite depth: if this strip is unexpectedly dry, stop rather than
-# generating an invalid case.
-# Sample the full physical 50 m source span when calculating DEP_WK, rather
-# than a grid-cell-count-dependent portion of the source bathymetry.
+# Use only the continuous, open-water wavemaker segment for DEP_WK.  A full
+# width source let shallow/dry cells by the south-west headland be forced while
+# a median depth from the rest of the 6 km line concealed that problem.
+# Sample the full physical 50 m source span in x rather than a
+# grid-cell-count-dependent portion of the source bathymetry.
 n_source <- max(3, 2 * ceiling((source_envelope_width_m / 2) / dx) + 1)
-source_depth_at_x <- function(x_position_m) {
-  wk_i <- max(1, min(mglob, round(x_position_m / dx) + 1))
-  wk_indices <- seq.int(max(1, wk_i - floor(n_source / 2)),
-                        min(mglob, wk_i + floor(n_source / 2)))
-  source_depth <- depth_funwave[wk_indices, , drop = FALSE]
-  depth_m <- median(source_depth[source_depth > 0], na.rm = TRUE)
-  if (!is.finite(depth_m) || depth_m <= 0) {
-    stop("The buoy-side source strip is dry. Move the rotated model domain or inspect the DEM.")
+wk_i <- max(1, min(mglob, round(x_wk / dx) + 1))
+wk_indices <- seq.int(max(1, wk_i - floor(n_source / 2)),
+                      min(mglob, wk_i + floor(n_source / 2)))
+source_depth_strip <- depth_funwave[wk_indices, , drop = FALSE]
+
+# Waves should not be introduced where their requested Hs is already close to
+# the local depth-limited breaking range.  The 5 m lower bound keeps ordinary
+# forecasts clear of very shallow cells; 1.5 Hs is the stronger condition for
+# severe events.  Every x cell in the 50 m source envelope must satisfy it.
+source_min_depth_required_m <- max(5, 1.5 * hs[i])
+source_min_depth_by_y <- apply(source_depth_strip, 2, function(z) {
+  z[!is.finite(z)] <- 0
+  if (any(z <= 0)) return(0)
+  min(z)
+})
+source_median_depth_by_y <- apply(source_depth_strip, 2, function(z) {
+  z <- z[is.finite(z) & z > 0]
+  if (!length(z)) return(NA_real_)
+  median(z)
+})
+
+# Convert the source-centre line to WGS84 and test its cells against the fixed
+# headland polygon without adding an R package.  The polygon already includes
+# a conservative buffer around the highlighted yellow area.
+source_y_model_m <- (seq_len(nglob) - 1) * dy
+source_x_om <- if (source_is_low_x) xmin(template) + x_wk else xmax(template) - x_wk
+source_y_om <- if (source_is_low_x) {
+  ymin(template) + source_y_model_m
+} else {
+  ymax(template) - source_y_model_m
+}
+source_points_om <- vect(cbind(rep(source_x_om, nglob), source_y_om),
+                         type = "points", crs = omerc_crs)
+source_points_ll <- crds(project(source_points_om, "EPSG:4326"))
+
+point_in_polygon <- function(x, y, polygon) {
+  n_edge <- nrow(polygon) - 1L
+  inside <- rep(FALSE, length(x))
+  for (edge in seq_len(n_edge)) {
+    x1 <- polygon[edge, 1]
+    y1 <- polygon[edge, 2]
+    x2 <- polygon[edge + 1L, 1]
+    y2 <- polygon[edge + 1L, 2]
+    crosses <- (y1 > y) != (y2 > y)
+    x_cross <- (x2 - x1) * (y - y1) / (y2 - y1 + .Machine$double.eps) + x1
+    flip <- crosses & x < x_cross
+    inside[flip] <- !inside[flip]
   }
-  depth_m
+  inside
 }
 
-dep_wk <- source_depth_at_x(x_wk)
+source_in_headland_exclusion <- point_in_polygon(
+  source_points_ll[, 1], source_points_ll[, 2], source_exclusion_ll
+)
+source_depth_eligible <- source_min_depth_by_y >= source_min_depth_required_m
+source_candidate <- !source_in_headland_exclusion & source_depth_eligible
+
+largest_true_run <- function(x) {
+  if (!any(x)) return(integer())
+  runs <- rle(x)
+  ends <- cumsum(runs$lengths)
+  candidate_runs <- which(runs$values)
+  winner <- candidate_runs[which.max(runs$lengths[candidate_runs])]
+  seq.int(ends[winner] - runs$lengths[winner] + 1L, ends[winner])
+}
+
+source_y_indices <- largest_true_run(source_candidate)
+source_wavemaker_diagnostic <- data.frame(
+  model_j = seq_len(nglob),
+  model_y_m = source_y_model_m,
+  longitude = source_points_ll[, 1],
+  latitude = source_points_ll[, 2],
+  source_min_depth_m = source_min_depth_by_y,
+  source_median_depth_m = source_median_depth_by_y,
+  in_southwest_headland_exclusion = source_in_headland_exclusion,
+  meets_source_depth_requirement = source_depth_eligible,
+  selected_wavemaker_segment = seq_len(nglob) %in% source_y_indices,
+  stringsAsFactors = FALSE
+)
+# Write this before validating the selected width so a failed setup still
+# leaves the evidence needed to refine the exclusion in the Actions artifact.
+write.csv(source_wavemaker_diagnostic,
+          file.path(out_dir, "source_wavemaker_diagnostic.csv"), row.names = FALSE)
+
+minimum_source_ywidth_m <- max(500, 50 * dy)
+if (!length(source_y_indices) || length(source_y_indices) * dy < minimum_source_ywidth_m) {
+  stop(
+    "No continuous buoy-side wavemaker segment at least ", minimum_source_ywidth_m,
+    " m wide remains after excluding the south-west headland and requiring ",
+    round(source_min_depth_required_m, 2), " m water depth. Inspect ",
+    "source_wavemaker_diagnostic.csv or move the model domain."
+  )
+}
+
+# These coordinates follow FUNWAVE's model y convention (j = 1 at y = 0).
+# They describe the actual finite wavemaker segment rather than the complete
+# y extent of the rectangular model grid.
+source_y_first_cell_m <- source_y_model_m[min(source_y_indices)]
+source_y_last_cell_m <- source_y_model_m[max(source_y_indices)]
+y_wk <- mean(c(source_y_first_cell_m, source_y_last_cell_m))
+ywidth_wk <- length(source_y_indices) * dy
+
+source_depth_selected <- source_depth_strip[, source_y_indices, drop = FALSE]
+dep_wk <- median(source_depth_selected[is.finite(source_depth_selected) &
+                                       source_depth_selected > 0], na.rm = TRUE)
+if (!is.finite(dep_wk) || dep_wk < source_min_depth_required_m) {
+  stop("The selected wavemaker segment does not have a valid DEP_WK.")
+}
+
 peak_wavelength_m <- funwave_peak_wavelength(dep_wk, freq_peak)
 delta_wk <- 2 * funwave_width_wk_m / peak_wavelength_m
 if (!is.finite(delta_wk) || delta_wk <= 0) {
@@ -914,11 +1026,9 @@ sponge_east_width <- far_x_sponge
 # Preserve the prior 60 m physical lateral damping width across the resolution
 # change. At 5 m this is twelve cells, not the former 3 * dx expression.
 lateral_sponge_width <- 60
-# State the full-span source explicitly rather than relying on FUNWAVE's very
-# large default Ywidth_WK. This makes it clear that WK_IRR is a line source
-# across the whole seaward side, not a point source at y = 0.
-y_wk <- (nglob - 1) * dy / 2
-ywidth_wk <- nglob * dy
+# State the finite source explicitly rather than relying on FUNWAVE's very
+# large default Ywidth_WK. This line excludes the south-west headland area and
+# uses one contiguous, sufficiently deep open-water segment.
 
 input <- c(
   paste0("! Port Fairy: ", metres_label(dx), " m x ", metres_label(dy),
@@ -989,6 +1099,12 @@ grid_info <- data.frame(
   source_envelope_width_cells = source_envelope_cells,
   source_e_fold_half_width_cells = source_e_fold_cells,
   funwave_width_wk_half_width_m = funwave_width_wk_m,
+  source_exclusion_label = source_exclusion_label,
+  source_min_depth_required_m = source_min_depth_required_m,
+  source_y_first_cell_m = source_y_first_cell_m,
+  source_y_last_cell_m = source_y_last_cell_m,
+  source_y_cell_count = length(source_y_indices),
+  source_ywidth_selected_m = ywidth_wk,
   peak_wavelength_m = peak_wavelength_m,
   delta_wk = delta_wk,
   time_ramp_periods = time_ramp_periods,
@@ -1024,8 +1140,11 @@ message("Wavemaker: Xc_WK=", round(x_wk, 1), " m; ",
         round(source_envelope_width_m, 1), " m active Gaussian envelope (",
         round(source_envelope_cells, 1), " cells); Lp=", round(peak_wavelength_m, 1),
         " m; Delta_WK=", round(delta_wk, 3))
+message("Wavemaker y segment: ", round(ywidth_wk, 1), " m (j=",
+        min(source_y_indices), " to ", max(source_y_indices), "); DEP_WK=",
+        round(dep_wk, 2), " m; minimum permitted source depth=",
+        round(source_min_depth_required_m, 2), " m; ", source_exclusion_label)
 message("Wavemaker ramp: ", time_ramp_periods, " peak periods (",
         round(time_ramp_seconds, 1), " s); amplitude factor at ", total_time,
         " s = ", format(round(time_ramp_end_amplitude, 4), nsmall = 4),
         if (high_energy_case) " [high-energy Hs >= 4 m]" else "")
-

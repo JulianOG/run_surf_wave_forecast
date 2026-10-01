@@ -63,6 +63,7 @@ The case uses:
 | Wet/dry and numerical minimum depth | 0.10 m |
 | Breaking | Eddy-viscosity scheme; Cbrk1 = 0.65, Cbrk2 = 0.35 |
 | Wavemaker cross-shore envelope | 50 m, clear of the source-side sponge |
+| Wavemaker alongshore extent | Longest continuous deep-water segment; south-west headland area excluded |
 | Wavemaker ramp | 10 peak periods; 20 peak periods when Hs is 4 m or greater |
 | Output interval | 15 s |
 | Mean-current averaging window | 480 s after a 100 s spin-up |
@@ -74,6 +75,14 @@ wave height. For severe observed seas (`Hs >= 4 m`), the 20-peak-period ramp
 delays source start-up without reducing the observed forcing. In the 10-minute
 case, the 5.29 m, 20.5 s historical sea state reaches 99.98% of its requested
 amplitude by the end of the simulation.
+
+The wavemaker is not allowed to span the shallow south-west headland
+embayment. Each run selects the longest continuous part of the buoy-side line
+outside that fixed geographic exclusion which is fully wet through the source
+envelope and at least `max(5 m, 1.5 × Hs)` deep. The exact selected cells and
+their depths are saved in `port_fairy/output/source_wavemaker_diagnostic.csv`.
+That diagnostic, the generated input and grid metadata are retained as a
+short-lived Actions artifact even when a FUNWAVE run fails.
 
 ## Data
 

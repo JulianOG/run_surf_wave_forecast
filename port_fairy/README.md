@@ -54,12 +54,22 @@ TMA/JONSWAP-style wave field:
 | Mean direction-from | Converted to model travel direction for ThetaPeak; peak direction is fallback |
 | Mean directional spread | Sigma_Theta; peak spread, then 20°, are fallbacks |
 
-The numerical source is a line wavemaker across the buoy-side model boundary.
-Its cross-shore Gaussian envelope is 50 m wide, located beyond a 100 m
-source-side sponge and a 60 m clear gap. Delta_WK is derived from the selected
-peak wavelength, rather than treated as a fixed distance. This source
+The numerical source is a continuous line wavemaker along the usable,
+buoy-side model boundary. Its cross-shore Gaussian envelope is 50 m wide,
+located beyond a 100 m source-side sponge and a 60 m clear gap. The shallow
+south-west headland embayment is excluded from this line. The remaining source
+is the longest continuous section that is fully wet through the 50 m source
+envelope and has a depth of at least `max(5 m, 1.5 × Hs)`. `DEP_WK` and
+`Delta_WK` are calculated from that exact selected section, not a full-width
+median that can conceal a shallow source endpoint. This source
 parameterisation represents the integral buoy sea state; it is not a
 phase-resolved buoy replay or a full two-dimensional spectrum.
+
+`output/source_wavemaker_diagnostic.csv` records every potential source cell,
+its geographic location, minimum and median source-envelope depth, whether it
+was in the south-west exclusion, and whether it was selected. Both workflows
+upload this small diagnostic even if FUNWAVE subsequently fails, together with
+the generated `input.txt` and grid metadata.
 
 Strongly oblique source directions are retained but flagged in metadata and
 should be interpreted cautiously because lateral sponges can absorb part of

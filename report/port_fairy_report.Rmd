@@ -372,9 +372,30 @@ source_x_om <- if (source_is_low_x) {
 } else {
   xmax(depth_raster) - grid$x_wk_m
 }
+# The source is no longer necessarily a full-width line: the setup excludes
+# the shallow south-west headland section and writes the selected model-y
+# endpoints. Retain the full line only when rendering an older output folder
+# that lacks these fields.
+source_y_first_model_m <- if ("source_y_first_cell_m" %in% names(grid)) {
+  grid$source_y_first_cell_m[1]
+} else {
+  0
+}
+source_y_last_model_m <- if ("source_y_last_cell_m" %in% names(grid)) {
+  grid$source_y_last_cell_m[1]
+} else {
+  (grid$Nglob[1] - 1) * grid$dy_m[1]
+}
+source_y_om <- if (source_is_low_x) {
+  c(ymin(depth_raster) + source_y_first_model_m,
+    ymin(depth_raster) + source_y_last_model_m)
+} else {
+  c(ymax(depth_raster) - source_y_first_model_m,
+    ymax(depth_raster) - source_y_last_model_m)
+}
 source_line_om <- vect(rbind(
-  c(source_x_om, ymin(depth_raster)),
-  c(source_x_om, ymax(depth_raster))
+  c(source_x_om, source_y_om[1]),
+  c(source_x_om, source_y_om[2])
 ), type = "lines", crs = crs(depth_raster))
 source_line_ll_xy <- crds(project(source_line_om, "EPSG:4326"))
 
@@ -2257,4 +2278,3 @@ if (!is.null(current_streamline_debug_url)) {
   )
 }
 ```
-
