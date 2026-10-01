@@ -238,7 +238,14 @@ read_positive_setting <- function(name, default) {
   }
   value
 }
-metres_label <- function(x) sub("\\.?0+$", "", format(x, trim = TRUE, scientific = FALSE))
+metres_label <- function(x) {
+  # Do not strip significant trailing zeroes: 10 m must stay "10", not "1".
+  ifelse(
+    is.finite(x) & abs(x - round(x)) < 1e-8,
+    format(round(x), trim = TRUE, scientific = FALSE),
+    format(x, trim = TRUE, scientific = FALSE)
+  )
+}
 
 # FUNWAVE always writes native-grid fields. The daily workflow leaves both
 # spacings at 5 m. Historical runs may set a finer cross-shore DX while
@@ -931,9 +938,12 @@ input <- c(
   sprintf("Sponge_east_width = %.1f", sponge_east_width),
   sprintf("Sponge_south_width = %.1f", lateral_sponge_width),
   sprintf("Sponge_north_width = %.1f", lateral_sponge_width),
-  # 0.01 m matches FUNWAVE-TVD beach/rip tutorial examples and retains a
-  # shallow wetting/drying threshold without the former 0.05 m truncation.
-  "Cd = 0.002", "CFL = 0.5", "FroudeCap = 1.0", "MinDepth = 0.01",
+  # A 1 cm wet/dry threshold was unstable for the energetic historical case:
+  # shallow DEM films produced extreme eta/velocity before 80 s. Use 5 cm for
+  # both wetting/drying and the bottom-friction limiter, so shallow cells are
+  # not treated inconsistently by the two controls.
+  "Cd = 0.002", "CFL = 0.5", "FroudeCap = 1.0",
+  "MinDepth = 0.05", "MinDepthFrc = 0.05",
   "VISCOSITY_BREAKING = T", "Cbrk1 = 0.65", "Cbrk2 = 0.35",
   # The public current pages use time-mean currents. Do not write
   # phase-resolved U/V snapshots: they are wave-orbital velocities, not the
@@ -994,5 +1004,6 @@ message("Wavemaker: Xc_WK=", round(x_wk, 1), " m; ",
         round(source_envelope_width_m, 1), " m active Gaussian envelope (",
         round(source_envelope_cells, 1), " cells); Lp=", round(peak_wavelength_m, 1),
         " m; Delta_WK=", round(delta_wk, 3))
+
 
 

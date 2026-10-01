@@ -1,76 +1,122 @@
-# Port Fairy nearshore-wave forecast
+# Port Fairy nearshore-wave diagnostics
 
-This repository runs a daily experimental nearshore-wave simulation for Port
-Fairy, Victoria using FUNWAVE-TVD. It combines the latest available Port Fairy
-wave-buoy observation with a local bathymetry grid and publishes model
-diagnostics as a GitHub Pages report.
+This repository runs an experimental nearshore-wave model for Port Fairy,
+Victoria. It combines the latest usable Port Fairy wave-buoy observation,
+Portland water level and local Victorian bathymetry to generate a
+FUNWAVE-TVD diagnostic and publish it at
+<https://julianog.github.io/run_surf_wave_forecast/>.
 
-The project is intended to demonstrate a reproducible workflow for turning
-near-real-time offshore wave observations into a high-resolution nearshore
-model diagnostic. It is not a navigation, public-safety, or emergency-warning
-service.
+The site is a research and workflow demonstration. It is not an operational
+forecast, navigation aid, public-safety product or emergency-warning service.
 
-## What the workflow does
+## Products
 
-Each daily run:
+The live GitHub Pages report provides:
 
-1. Builds and runs a compact upstream FUNWAVE-TVD test case.
-2. Downloads the newest usable IMOS Port Fairy buoy record, with fallback to
-   the two preceding monthly files.
-3. Builds a 20 m rotated-grid Port Fairy case from the Victorian DEM.
-4. Runs a 30-minute FUNWAVE-TVD simulation forced with a parametric irregular
-   wave spectrum.
-5. Publishes a report with bathymetry checks, forcing geometry, free-surface
-   animations, interactive maps of the latest elevation and maximum elevation,
-   and model provenance.
-6. Writes stable GIF, PNG and `latest.json` assets for an optional separate
-   social-media bot.
+- selected buoy forcing and Portland still-water level;
+- 6-second animations of simulated free-surface elevation for the full run and
+  its final sixth;
+- interactive local WGS84 maps of latest elevation, maximum positive elevation
+  and peak simulated significant wave height;
+- five exact FUNWAVE grid-point elevation records from the buoy-to-nearshore
+  transect;
+- diagnostic current pages based on smoothed FUNWAVE Umean/Vmean fields,
+  including streamlines, particle trails, Earth-style particles and
+  Leaflet.Velocity;
+- provenance, forcing geometry and interpretation information.
+
+Stable social assets are written below the Pages assets directory, alongside
+latest.json for a separate posting bot. The normal report remains the source of
+truth for interpretation.
+
+## Workflows
+
+| Workflow | Purpose | Configuration |
+| --- | --- | --- |
+| Daily FUNWAVE test and report | Scheduled daily at 03:17 UTC, with manual dispatch available | 5 m × 5 m grid; 10-minute run; output every 15 s |
+| Historical Port Fairy reports | Manual workflow for one or more Port Fairy local dates | 2.5 m cross-shore × 10 m alongshore grid; public fields aggregated to 10 m; separate timestamped artifacts |
+| Compact upstream test | Runs as part of the daily workflow | Confirms the pinned FUNWAVE executable before the Port Fairy case |
+
+Both Port Fairy workflows run FUNWAVE with two MPI ranks. The daily workflow
+publishes the Pages report; historical runs publish downloadable artifacts and
+do not replace the live forecast.
+
+## Model method
+
+The case is built in a local Oblique Mercator projection. The model x-axis is
+reordered on every run to point from the buoy-side source edge toward the
+coast. FUNWAVE fields are reconstructed in that native rotated grid before
+being projected to WGS84 for maps and animations.
+
+The model uses the internal irregular wavemaker, WK_IRR. Significant wave
+height, peak period, wave direction and directional spread form a parametric
+TMA/JONSWAP-style sea state. This is not a replay of the observed surface
+elevation, a full directional-spectrum boundary condition or an externally
+validated operational forecast.
+
+The case uses:
+
+| Control | Value |
+| --- | --- |
+| Bottom drag, Cd | 0.002 |
+| CFL | 0.5 |
+| Wet/dry minimum depth, MinDepth | 0.05 m |
+| Friction minimum depth, MinDepthFrc | 0.05 m |
+| Breaking | Eddy-viscosity scheme; Cbrk1 = 0.65, Cbrk2 = 0.35 |
+| Wavemaker cross-shore envelope | 50 m, clear of the source-side sponge |
+| Output interval | 15 s |
+| Mean-current averaging window | 480 s after a 100 s spin-up |
+
+The matched 5 cm shallow-water controls are deliberately more conservative
+than the former 1 cm wet/dry threshold. The latter became unstable in an
+energetic historical case by admitting very thin DEM-scale water films while
+the friction limiter remained at a different depth.
+
+## Data
+
+The required bathymetry is
+port_fairy/data/VCDEM21_GDA2020_z54_Seamless_portFairy.tif. It is not included
+in generated update archives.
+
+Wave parameters are obtained from IMOS Port Fairy NetCDF records. The daily
+workflow checks the current month and preceding monthly files. Historical
+runs discover the public AODN delayed-mode archive and use realtime data only
+when delayed data are not yet available.
+
+Portland hourly water levels use UHSLC station h129. The workflow refreshes
+h129_current.csv, then falls back to the committed h129.csv. Values are
+assumed to be LAT and converted as AHD = LAT − 0.597 m. A run records the
+selected tide time and value; it does not extrapolate a stale tide record.
+
+See the detailed [Port Fairy case documentation](port_fairy/README.md) for the
+domain, files, masks, historical workflow and interpretation limits.
 
 ## Repository layout
 
-| Location | Purpose |
+| Location | Role |
 | --- | --- |
-| `.github/workflows/daily-forecast.yml` | Scheduled model, render and publishing workflow. |
-| `Dockerfile` | Reproducible FUNWAVE-TVD and R environment. |
-| `port_fairy/` | Port Fairy case preparation, local data and model outputs. |
-| `report/port_fairy_report.Rmd` | Published Port Fairy diagnostic report. |
-| `scripts/render_social_assets.R` | Standalone GIF and PNG renderer. |
-| `scripts/write_latest_manifest.R` | Public metadata manifest writer. |
-| `report/beach_2d_radiation_plots.Rmd` | Compact upstream FUNWAVE test diagnostic. |
+| .github/workflows/daily-forecast.yml | Scheduled live forecast, render and Pages deployment |
+| .github/workflows/historical-port-fairy.yml | Date-specific historical reporting |
+| Dockerfile | Pinned FUNWAVE-TVD/MPI image only |
+| port_fairy/setup_port_fairy_funwave.R | Builds bathymetry, forcing, tide level, grid, stations and input.txt |
+| port_fairy/data/ | Committed tide data and required local DEM |
+| report/port_fairy_report.Rmd | Main Pages and historical report |
+| scripts/render_social_assets.R | Writes standalone GIF and PNG assets |
+| scripts/write_latest_manifest.R | Writes latest.json |
 
-## Published products
-
-The GitHub Pages site contains the current Port Fairy report and the compact
-test result. It also exposes stable social assets under `assets/` and a
-machine-readable `latest.json` manifest. The manifest identifies the buoy
-observation, model configuration, public asset URLs and whether the buoy QC
-status permits an automated public post.
-
-## Data and method
-
-The Port Fairy case uses the Victorian seamless bathymetry/elevation DEM and
-near-real-time Port Fairy wave-buoy observations from IMOS. The model uses a
-local Oblique Mercator grid so the model x-axis runs from the offshore source
-edge toward the coast. Raw FUNWAVE fields are reconstructed on that grid before
-being transformed to WGS84 for maps and animations.
-
-FUNWAVE's `WK_IRR` wavemaker is parameterised from observed significant wave
-height, peak period, peak direction and directional spread. It represents a
-parametric TMA/JONSWAP sea state, not a phase-resolved replay of the buoy or a
-full directional spectrum.
-
-See [the Port Fairy case documentation](port_fairy/README.md) for the model
-domain, forcing, files and interpretation limits.
+R packages are installed on the GitHub Actions runner. The Docker image is
+intentionally limited to FUNWAVE and MPI.
 
 ## Data acknowledgement
 
-Data were sourced from Australia's Integrated Marine Observing System (IMOS),
-which is enabled by the National Collaborative Research Infrastructure Strategy
+Wave data are sourced from Australia’s Integrated Marine Observing System
+(IMOS), enabled by the National Collaborative Research Infrastructure Strategy
 (NCRIS). The Port Fairy wave data are collected and quality controlled by the
 University of Western Australia and are an output of the Catching Oz Waves
 project, supported by the Australian Research Data Commons (ARDC):
 <https://doi.org/10.47486/DP748>. ARDC is funded by NCRIS.
 
-Suggested data citation: *Deakin University (year of data downloaded), Wave
-buoys Observations -- Australia -- near real-time, downloaded from the IMOS URL
-on the date of download.*
+Suggested citation: Deakin University [year of data downloaded], *Wave buoys
+Observations – Australia – near real-time*, downloaded from the relevant IMOS
+URL on the date of download.
+
