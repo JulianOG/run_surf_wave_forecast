@@ -371,75 +371,166 @@ buoy_file <- file.path(data_dir, buoy_records$source_file[i])
 message("Using buoy data: ", basename(buoy_file))
 
 # ----- Portland hourly water level -----------------------------------------
-# UHSLC fast-delivery data are UTC hourly values in millimetres. The Actions
-# workflow downloads this file before this script begins, avoiding a long R
-# download timeout during case construction. Portland's supplied tidal-datum
-# sheet states that LAT is 0.597 m below AHD, so this workflow assumes CSV
-# values are LAT and uses: water level AHD (m) = water level LAT (m) - 0.597.
-# It is a static still-water level for this short FUNWAVE run, applied across
-# the domain (and therefore at the offshore boundary), not a paddle signal.
-portland_file <- file.path(data_dir, "UHSLC_h129_Portland_hourly.csv")
-if (!file.exists(portland_file) || file.info(portland_file)$size <= 1000) {
-  warning(
-    "The pre-downloaded Portland UHSLC CSV is unavailable; ",
-    "continuing with a 0.000 m AHD still-water level."
-  )
-  portland_file <- NULL
-}
+# UHSLC fast-delivery data are UTC hourly values in millimetres. Prefer the
+# committed h129.csv; the workflows refresh h129_current.csv before this script
+# is called and this script can also refresh it for a local/manual run. The
+# Portland tidal-datum sheet states that LAT is 0.597 m below AHD, so:
+# water level AHD (m) = water level LAT (m) - 0.597. It is a static still-water
+# level for this short FUNWAVE run, applied across the domain, not a paddle
+# signal.
 portland_to_ahd_offset_m <- -0.597
 portland_reference_datum <- "LAT assumed; Portland observation unavailable"
 portland_water_level_lat_m <- NA_real_
 portland_water_level_ahd_m <- 0
 portland_time_forcing <- as.POSIXct(NA, tz = "UTC")
-portland <- NULL
-if (!is.null(portland_file)) {
-  portland <- tryCatch(
+portland_source_file <- NA_character_
+
+read_portland_hourly <- function(path) {
+  if (!file.exists(path) || file.info(path)$size <= 1000) return(NULL)
+  x <- tryCatch(
     utils::read.csv(
-      portland_file, header = FALSE,
+      path, header = FALSE,
       col.names = c("year", "month", "day", "hour", "level_mm"),
-      colClasses = rep("numeric", 5)
+      colClasses = rep("numeric", 5),
+      comment.char = "", strip.white = TRUE
     ),
-    error = function(e) NULL
-  )
-  if (is.null(portland) || !nrow(portland)) {
-    warning(
-      "The pre-downloaded Portland UHSLC CSV could not be parsed; ",
-      "continuing with a 0.000 m AHD still-water level."
-    )
-  } else {
-    portland$time_utc <- as.POSIXct(
-      sprintf("%04.0f-%02.0f-%02.0f %02.0f:00:00", portland$year, portland$month,
-              portland$day, portland$hour), tz = "UTC"
-    )
-    portland$level_mm[portland$level_mm <= -9990] <- NA_real_
-    portland$water_level_lat_m <- portland$level_mm / 1000
-    portland$water_level_ahd_m <- portland$water_level_lat_m + portland_to_ahd_offset_m
-    target_time <- time_utc[i]
-    portland_valid <- which(is.finite(portland$level_mm))
-    nearest_portland <- if (length(portland_valid)) {
-      portland_valid[which.min(abs(difftime(
-        portland$time_utc[portland_valid], target_time, units = "secs"
-      )))]
-    } else {
-      NA_integer_
+    error = function(e) {
+      warning("Could not parse Portland hourly data in ", basename(path), ": ",
+              conditionMessage(e))
+      NULL
     }
-    portland_gap_minutes <- if (is.na(nearest_portland)) Inf else abs(as.numeric(difftime(
-      portland$time_utc[nearest_portland], target_time, units = "mins"
-    )))
-    if (is.finite(portland_gap_minutes) && portland_gap_minutes <= 90) {
-      portland_reference_datum <- "LAT (assumed from Portland tidal datum sheet)"
-      portland_water_level_lat_m <- portland$water_level_lat_m[nearest_portland]
-      portland_water_level_ahd_m <- portland$water_level_ahd_m[nearest_portland]
-      portland_time_forcing <- portland$time_utc[nearest_portland]
-      message(sprintf("Portland water level: %.3f m LAT = %.3f m AHD",
-                      portland_water_level_lat_m, portland_water_level_ahd_m))
-    } else {
-      warning(
-        "No contemporaneous Portland water level is available; ",
-        "continuing with a 0.000 m AHD still-water level."
-      )
+  )
+  if (is.null(x) || !nrow(x)) return(NULL)
+
+  valid_clock <- is.finite(x$year) & is.finite(x$month) &
+    is.finite(x$day) & is.finite(x$hour) &
+    x$month >= 1 & x$month <= 12 & x$day >= 1 & x$day <= 31 &
+    x$hour >= 0 & x$hour <= 23
+  x <- x[valid_clock, , drop = FALSE]
+  if (!nrow(x)) return(NULL)
+
+  x$time_utc <- as.POSIXct(
+    sprintf(
+      "%04d-%02d-%02d %02d:00:00",
+      as.integer(x$year), as.integer(x$month),
+      as.integer(x$day), as.integer(x$hour)
+    ),
+    tz = "UTC"
+  )
+  x <- x[!is.na(x$time_utc), , drop = FALSE]
+  x$level_mm[x$level_mm <= -9990] <- NA_real_
+  x$water_level_lat_m <- x$level_mm / 1000
+  x$water_level_ahd_m <- x$water_level_lat_m + portland_to_ahd_offset_m
+  x
+}
+
+nearest_portland_record <- function(x, target_time) {
+  valid <- which(is.finite(x$level_mm) & !is.na(x$time_utc))
+  if (!length(valid)) return(list(index = NA_integer_, gap_minutes = Inf))
+  index <- valid[which.min(abs(difftime(x$time_utc[valid], target_time, units = "secs")))]
+  list(
+    index = index,
+    gap_minutes = abs(as.numeric(difftime(x$time_utc[index], target_time, units = "mins")))
+  )
+}
+
+download_current_portland_hourly <- function(data_dir) {
+  destination <- file.path(data_dir, "h129_current.csv")
+  temporary <- paste0(destination, ".download")
+  if (file.exists(temporary)) unlink(temporary)
+
+  old_timeout <- getOption("timeout")
+  options(timeout = max(300, old_timeout))
+  on.exit(options(timeout = old_timeout), add = TRUE)
+
+  status <- tryCatch(
+    utils::download.file(
+      "https://uhslc.soest.hawaii.edu/data/csv/fast/hourly/h129.csv",
+      temporary, mode = "wb", quiet = TRUE, method = "libcurl"
+    ),
+    error = function(e) {
+      warning("Could not refresh Portland hourly data from UHSLC: ", conditionMessage(e))
+      1L
+    }
+  )
+  if (isTRUE(status == 0) && file.exists(temporary) &&
+      file.info(temporary)$size > 1000) {
+    if (file.exists(destination)) unlink(destination)
+    if (file.rename(temporary, destination)) {
+      message("Refreshed Portland hourly data from UHSLC: ", basename(destination))
+      return(destination)
     }
   }
+  if (file.exists(temporary)) unlink(temporary)
+  NULL
+}
+
+target_time <- time_utc[i]
+portland_candidates <- file.path(
+  data_dir,
+  c("h129_current.csv", "h129.csv", "UHSLC_h129_Portland_hourly.csv")
+)
+portland_candidates <- unique(portland_candidates[file.exists(portland_candidates)])
+portland_series <- lapply(portland_candidates, read_portland_hourly)
+usable_series <- which(vapply(portland_series, function(x) !is.null(x) && nrow(x), logical(1)))
+
+portland <- NULL
+nearest_portland <- list(index = NA_integer_, gap_minutes = Inf)
+if (length(usable_series)) {
+  nearest_all <- lapply(portland_series[usable_series], nearest_portland_record,
+                        target_time = target_time)
+  gaps <- vapply(nearest_all, function(x) x$gap_minutes, numeric(1))
+  selected <- usable_series[which.min(gaps)]
+  portland <- portland_series[[selected]]
+  nearest_portland <- nearest_portland_record(portland, target_time)
+  portland_source_file <- portland_candidates[selected]
+}
+
+# A committed file is intentionally preferred. Refresh only when it does not
+# contain a contemporaneous record (or in a manual run with no committed file).
+if (is.null(portland) || !is.finite(nearest_portland$gap_minutes) ||
+    nearest_portland$gap_minutes > 90) {
+  refreshed_file <- download_current_portland_hourly(data_dir)
+  refreshed <- if (is.null(refreshed_file)) NULL else read_portland_hourly(refreshed_file)
+  if (!is.null(refreshed) && nrow(refreshed)) {
+    refreshed_nearest <- nearest_portland_record(refreshed, target_time)
+    if (refreshed_nearest$gap_minutes < nearest_portland$gap_minutes) {
+      portland <- refreshed
+      nearest_portland <- refreshed_nearest
+      portland_source_file <- refreshed_file
+    }
+  }
+}
+
+if (!is.null(portland) && is.finite(nearest_portland$gap_minutes) &&
+    nearest_portland$gap_minutes <= 90) {
+  portland_reference_datum <- "LAT (assumed from Portland tidal datum sheet)"
+  portland_water_level_lat_m <- portland$water_level_lat_m[nearest_portland$index]
+  portland_water_level_ahd_m <- portland$water_level_ahd_m[nearest_portland$index]
+  portland_time_forcing <- portland$time_utc[nearest_portland$index]
+  message(sprintf(
+    "Portland water level from %s: %.3f m LAT = %.3f m AHD (%s UTC; %.0f min offset)",
+    basename(portland_source_file), portland_water_level_lat_m,
+    portland_water_level_ahd_m,
+    format(portland_time_forcing, "%Y-%m-%d %H:%M"),
+    nearest_portland$gap_minutes
+  ))
+} else {
+  coverage <- if (!is.null(portland) && nrow(portland)) {
+    paste0(
+      format(min(portland$time_utc, na.rm = TRUE), "%Y-%m-%d"),
+      " to ",
+      format(max(portland$time_utc, na.rm = TRUE), "%Y-%m-%d")
+    )
+  } else {
+    "no parseable local or refreshed file"
+  }
+  warning(
+    "No Portland water level within 90 minutes of ",
+    format(target_time, "%Y-%m-%d %H:%M UTC"),
+    " (available coverage: ", coverage, "). ",
+    "A 0.000 m AHD still-water fallback will be used."
+  )
 }
 
 # Write an observed-condition context for every report. Historical runs retain
@@ -840,7 +931,9 @@ input <- c(
   sprintf("Sponge_east_width = %.1f", sponge_east_width),
   sprintf("Sponge_south_width = %.1f", lateral_sponge_width),
   sprintf("Sponge_north_width = %.1f", lateral_sponge_width),
-  "Cd = 0.002", "CFL = 0.5", "FroudeCap = 1.0", "MinDepth = 0.05",
+  # 0.01 m matches FUNWAVE-TVD beach/rip tutorial examples and retains a
+  # shallow wetting/drying threshold without the former 0.05 m truncation.
+  "Cd = 0.002", "CFL = 0.5", "FroudeCap = 1.0", "MinDepth = 0.01",
   "VISCOSITY_BREAKING = T", "Cbrk1 = 0.65", "Cbrk2 = 0.35",
   # The public current pages use time-mean currents. Do not write
   # phase-resolved U/V snapshots: they are wave-orbital velocities, not the
@@ -901,4 +994,5 @@ message("Wavemaker: Xc_WK=", round(x_wk, 1), " m; ",
         round(source_envelope_width_m, 1), " m active Gaussian envelope (",
         round(source_envelope_cells, 1), " cells); Lp=", round(peak_wavelength_m, 1),
         " m; Delta_WK=", round(delta_wk, 3))
+
 

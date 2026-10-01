@@ -131,16 +131,28 @@ jobs:
         run: |
           Rscript -e 'for (pkg in c("gifski", "htmltools", "htmlwidgets", "leaflet", "ncdf4", "plotly", "RColorBrewer", "rmarkdown", "terra")) stopifnot(requireNamespace(pkg, quietly = TRUE))'
 
-      - name: Use committed Portland hourly tide data
+      - name: Refresh and check Portland hourly tide data
         shell: bash
         run: |
-          tide_file="port_fairy/data/UHSLC_h129_Portland_hourly.csv"
-          if [ -s "$tide_file" ] && [ "$(wc -c < "$tide_file")" -gt 1000 ]; then
-            echo "Using committed Portland hourly tide data: $tide_file ($(wc -c < "$tide_file") bytes)."
+          source_url="https://uhslc.soest.hawaii.edu/data/csv/fast/hourly/h129.csv"
+          tide_file="port_fairy/data/h129_current.csv"
+          temporary="${tide_file}.download"
+          rm -f "$temporary"
+          if curl --fail --location --retry 3 --retry-delay 5 --connect-timeout 30 \
+              --max-time 600 --output "$temporary" "$source_url" \
+              && [ -s "$temporary" ] && [ "$(wc -c < "$temporary")" -gt 1000 ]; then
+            mv "$temporary" "$tide_file"
+            echo "Refreshed Portland hourly tide data: $tide_file ($(wc -c < "$tide_file") bytes)."
           else
-            echo "::warning::Committed Portland tide file is missing or too small: $tide_file"
-            echo "::warning::The setup script will transparently use its 0.000 m AHD fallback."
+            rm -f "$temporary"
+            echo "::warning::Could not refresh Portland data; setup will use committed h129.csv if it covers the requested time."
           fi
+          for candidate in "$tide_file" "port_fairy/data/h129.csv" "port_fairy/data/UHSLC_h129_Portland_hourly.csv"; do
+            if [ -s "$candidate" ] && [ "$(wc -c < "$candidate")" -gt 1000 ]; then
+              echo "Portland tide candidate available: $candidate ($(wc -c < "$candidate") bytes)."
+              break
+            fi
+          done
 
       - name: Build the rotated Port Fairy case from bathymetry and buoy data
         run: |
@@ -215,5 +227,6 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
 
 
