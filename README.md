@@ -61,28 +61,30 @@ The case uses:
 | Bottom drag, Cd | 0.002 |
 | CFL | 0.5 |
 | Wet/dry and numerical minimum depth | 0.10 m |
-| Breaking | Eddy-viscosity scheme; Cbrk1 = 0.65, Cbrk2 = 0.35 |
+| Spatial reconstruction | Explicit third-order TVD |
+| Breaking | Eddy-viscosity scheme; Cbrk1 = 0.45, Cbrk2 = 0.35 |
 | Wavemaker cross-shore envelope | 50 m, clear of the source-side sponge |
 | Wavemaker alongshore extent | Longest continuous deep-water segment; south-west headland area excluded |
 | Wavemaker ramp | 10 peak periods; 20 peak periods when Hs is 4 m or greater |
 | Output interval | 15 s |
 | Mean-current averaging window | 480 s after a 100 s spin-up |
 
-In the pinned FUNWAVE-TVD revision, `MinDepth` and `MinDepthFrc` are merged to
-their smaller value during input parsing. They therefore have to be equal. The
-case uses a 10 cm wet/dry and numerical floor; it does not reduce the imposed
-wave height. For severe observed seas (`Hs >= 4 m`), the 20-peak-period ramp
-delays source start-up without reducing the observed forcing. In the 10-minute
-case, the 5.29 m, 20.5 s historical sea state reaches 99.98% of its requested
-amplitude by the end of the simulation.
+FUNWAVE uses the smaller of `MinDepth` and `MinDepthFrc`; both are explicitly
+set to 10 cm here. This does not reduce the imposed wave height. For severe
+observed seas (`Hs >= 4 m`), the 20-peak-period ramp delays source start-up
+without reducing the observed forcing. In the 10-minute case, the 5.29 m,
+20.5 s historical sea state reaches 99.98% of its requested amplitude by the
+end of the simulation.
 
 The wavemaker is not allowed to span the shallow south-west headland
 embayment. Each run selects the longest continuous part of the buoy-side line
 outside that fixed geographic exclusion which is fully wet through the source
-envelope and at least `max(5 m, 1.5 × Hs)` deep. The exact selected cells and
-their depths are saved in `port_fairy/output/source_wavemaker_diagnostic.csv`.
-That diagnostic, the generated input and grid metadata are retained as a
-short-lived Actions artifact even when a FUNWAVE run fails.
+envelope and at least `max(5 m, 1.5 × Hs)` deep. It also requires the line
+depth to be close to its one `DEP_WK` value: 80% of the offshore reference for
+ordinary seas and 90% for severe seas. The exact cells and their depth tests
+are saved in `port_fairy/output/source_wavemaker_diagnostic.csv`. That
+diagnostic, the generated input/depth grids and any emergency eta/mask files
+are retained as a short-lived Actions artifact even when a FUNWAVE run fails.
 
 ## Data
 

@@ -59,17 +59,21 @@ buoy-side model boundary. Its cross-shore Gaussian envelope is 50 m wide,
 located beyond a 100 m source-side sponge and a 60 m clear gap. The shallow
 south-west headland embayment is excluded from this line. The remaining source
 is the longest continuous section that is fully wet through the 50 m source
-envelope and has a depth of at least `max(5 m, 1.5 × Hs)`. `DEP_WK` and
-`Delta_WK` are calculated from that exact selected section, not a full-width
-median that can conceal a shallow source endpoint. This source
+envelope and has a depth of at least `max(5 m, 1.5 × Hs)`. Because FUNWAVE
+uses one `DEP_WK` for the whole line, the selected cells must also match the
+offshore median depth: at least 80% for ordinary seas and 90% for `Hs >= 4 m`.
+`DEP_WK` and `Delta_WK` are calculated from that exact depth-consistent
+section, not a full-width median that can conceal a shallow source endpoint.
+This source
 parameterisation represents the integral buoy sea state; it is not a
 phase-resolved buoy replay or a full two-dimensional spectrum.
 
 `output/source_wavemaker_diagnostic.csv` records every potential source cell,
 its geographic location, minimum and median source-envelope depth, whether it
-was in the south-west exclusion, and whether it was selected. Both workflows
-upload this small diagnostic even if FUNWAVE subsequently fails, together with
-the generated `input.txt` and grid metadata.
+was in the south-west exclusion, whether it met the depth-consistency test and
+whether it was selected. Both workflows upload this diagnostic even if
+FUNWAVE subsequently fails, together with the generated input, depth grid,
+warped bathymetry and FUNWAVE's emergency eta/mask files when available.
 
 Strongly oblique source directions are retained but flagged in metadata and
 should be interpreted cautiously because lateral sponges can absorb part of
@@ -99,19 +103,19 @@ an unrelated tide observation.
 | Control | Value | Role |
 | --- | --- | --- |
 | MinDepth | 0.10 m | Wet/dry threshold |
-| MinDepthFrc | 0.10 m | Numerical depth floor in momentum, CFL and friction terms |
+| MinDepthFrc | 0.10 m | Numerical floor in momentum, CFL and friction terms |
 | Cd | 0.002 | Quadratic bottom drag |
 | CFL | 0.5 | Adaptive time-step control |
 | FroudeCap | 1.0 | Limits unrealistically fast shallow flow |
+| HIGH_ORDER | THIRD | TVD spatial reconstruction |
 | VISCOSITY_BREAKING | T | Eddy-viscosity breaking option |
-| Cbrk1, Cbrk2 | 0.65, 0.35 | Breaking coefficients |
+| Cbrk1, Cbrk2 | 0.45, 0.35 | FUNWAVE-TVD recalibrated breaking coefficients |
+| WAVEMAKER_Cbrk | 1.0 | Source-zone breaking threshold |
 
-`MinDepth` and `MinDepthFrc` have different conceptual roles, but this pinned
-FUNWAVE-TVD revision merges them to their smaller value during input parsing.
-They must therefore be set identically. The case uses 0.10 m for both, so
-thin-water momentum, CFL and wet/dry calculations share a real numerical
-floor. Severe observed seas (`Hs >= 4 m`) use a 20-peak-period source ramp
-rather than the normal 10 peak periods; this reduces only the start-up
+FUNWAVE uses the smaller of `MinDepth` and `MinDepthFrc` as the effective
+threshold. They are both set to 0.10 m here, so the intended stable value is
+unambiguous. Severe observed seas (`Hs >= 4 m`) use a 20-peak-period source
+ramp rather than the normal 10 peak periods; this reduces only the start-up
 transient and does not cap the requested Hs.
 
 ## Outputs and display rules

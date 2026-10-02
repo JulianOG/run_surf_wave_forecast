@@ -166,7 +166,7 @@ jobs:
             "${{ needs.ensure-image.outputs.image }}" \
             -lc 'mkdir -p results && echo "Container CPUs: $(nproc)" && mpirun --allow-run-as-root -np 2 funwave input.txt'
 
-      - name: Upload wavemaker setup diagnostic
+      - name: Upload FUNWAVE input and failure diagnostic
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -176,6 +176,11 @@ jobs:
             port_fairy/output/grid_metadata.csv
             port_fairy/output/latest_buoy_forcing.csv
             port_fairy/output/source_wavemaker_diagnostic.csv
+            port_fairy/output/depth.txt
+            port_fairy/output/depth_*_positive_water_depth.tif
+            port_fairy/output/elevation_*_warped.tif
+            port_fairy/output/results/eta_99999
+            port_fairy/output/results/mask_99999
           retention-days: 14
           if-no-files-found: warn
 
@@ -240,5 +245,4 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
-
 

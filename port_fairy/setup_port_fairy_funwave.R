@@ -827,11 +827,15 @@ time_ramp_periods <- if (high_energy_case) 20 else 10
 time_ramp_seconds <- time_ramp_periods / freq_peak
 time_ramp_end_amplitude <- tanh(pi * total_time / time_ramp_seconds)
 
-# In this pinned FUNWAVE-TVD revision, MinDepth and MinDepthFrc are both
-# replaced with their smaller value during input parsing. They must therefore
-# be equal. A 0.10 m floor was the stable pre-change configuration; it governs
-# wetting/drying and shallow-water numerics but does not reduce the imposed Hs.
+# The pinned FUNWAVE-TVD source combines MinDepth and MinDepthFrc as the
+# smaller effective value. Keep both at the stable 0.10 m configuration. This
+# governs wetting/drying and shallow-water numerics but does not reduce Hs.
 min_depth_m <- 0.10
+
+# The FUNWAVE guide recommends the third-order TVD reconstruction for field
+# cases. Keep this explicit so a container/default change cannot silently
+# switch the severe-sea case back to the less robust fourth-order option.
+high_order_scheme <- "THIRD"
 
 # Match FUNWAVE-TVD's Boussinesq dispersion relation when calculating the
 # peak wavelength at the wavemaker depth.
@@ -864,9 +868,9 @@ wk_indices <- seq.int(max(1, wk_i - floor(n_source / 2)),
 source_depth_strip <- depth_funwave[wk_indices, , drop = FALSE]
 
 # Waves should not be introduced where their requested Hs is already close to
-# the local depth-limited breaking range.  The 5 m lower bound keeps ordinary
+# the local depth-limited breaking range. The 5 m lower bound keeps ordinary
 # forecasts clear of very shallow cells; 1.5 Hs is the stronger condition for
-# severe events.  Every x cell in the 50 m source envelope must satisfy it.
+# severe events. Every x cell in the 50 m source envelope must satisfy it.
 source_min_depth_required_m <- max(5, 1.5 * hs[i])
 source_min_depth_by_y <- apply(source_depth_strip, 2, function(z) {
   z[!is.finite(z)] <- 0
@@ -913,7 +917,27 @@ source_in_headland_exclusion <- point_in_polygon(
   source_points_ll[, 1], source_points_ll[, 2], source_exclusion_ll
 )
 source_depth_eligible <- source_min_depth_by_y >= source_min_depth_required_m
-source_candidate <- !source_in_headland_exclusion & source_depth_eligible
+source_base_candidate <- !source_in_headland_exclusion & source_depth_eligible
+
+# `DEP_WK` is one scalar, whereas the source is a line. The prior failed case
+# used DEP_WK = 26.1 m over cells from 8.1 to 28.1 m deep. Thus the shallow
+# end was forced with a deep-water wavemaker specification. FUNWAVE's setup
+# guide calls for source-adjacent bathymetry to match DEP_WK. Keep a naturally
+# depth-consistent offshore segment instead of modifying the DEM: severe seas
+# use the upper 90% of the eligible source-depth profile, ordinary seas 80%.
+source_reference_depth_m <- median(
+  source_median_depth_by_y[source_base_candidate], na.rm = TRUE
+)
+if (!is.finite(source_reference_depth_m) || source_reference_depth_m <= 0) {
+  stop("No valid source-depth reference remains outside the headland exclusion.")
+}
+source_uniformity_fraction <- if (high_energy_case) 0.90 else 0.80
+source_uniformity_min_depth_m <- source_reference_depth_m * source_uniformity_fraction
+source_effective_min_depth_required_m <- max(
+  source_min_depth_required_m, source_uniformity_min_depth_m
+)
+source_depth_uniformity_eligible <- source_min_depth_by_y >= source_uniformity_min_depth_m
+source_candidate <- source_base_candidate & source_depth_uniformity_eligible
 
 largest_true_run <- function(x) {
   if (!any(x)) return(integer())
@@ -934,6 +958,7 @@ source_wavemaker_diagnostic <- data.frame(
   source_median_depth_m = source_median_depth_by_y,
   in_southwest_headland_exclusion = source_in_headland_exclusion,
   meets_source_depth_requirement = source_depth_eligible,
+  meets_source_depth_uniformity = source_depth_uniformity_eligible,
   selected_wavemaker_segment = seq_len(nglob) %in% source_y_indices,
   stringsAsFactors = FALSE
 )
@@ -947,7 +972,7 @@ if (!length(source_y_indices) || length(source_y_indices) * dy < minimum_source_
   stop(
     "No continuous buoy-side wavemaker segment at least ", minimum_source_ywidth_m,
     " m wide remains after excluding the south-west headland and requiring ",
-    round(source_min_depth_required_m, 2), " m water depth. Inspect ",
+    round(source_effective_min_depth_required_m, 2), " m water depth. Inspect ",
     "source_wavemaker_diagnostic.csv or move the model domain."
   )
 }
@@ -963,7 +988,7 @@ ywidth_wk <- length(source_y_indices) * dy
 source_depth_selected <- source_depth_strip[, source_y_indices, drop = FALSE]
 dep_wk <- median(source_depth_selected[is.finite(source_depth_selected) &
                                        source_depth_selected > 0], na.rm = TRUE)
-if (!is.finite(dep_wk) || dep_wk < source_min_depth_required_m) {
+if (!is.finite(dep_wk) || dep_wk < source_effective_min_depth_required_m) {
   stop("The selected wavemaker segment does not have a valid DEP_WK.")
 }
 
@@ -1064,12 +1089,14 @@ input <- c(
   sprintf("Sponge_east_width = %.1f", sponge_east_width),
   sprintf("Sponge_south_width = %.1f", lateral_sponge_width),
   sprintf("Sponge_north_width = %.1f", lateral_sponge_width),
-  # FUNWAVE merges MinDepth and MinDepthFrc to their smaller value. Keep both
-  # at the stable 10 cm value, rather than inadvertently using a 1 cm floor.
+  # The effective wet/dry value is MIN(MinDepth, MinDepthFrc); keep both at
+  # the stable 10 cm configuration rather than inadvertently using 1 cm.
   "Cd = 0.002", "CFL = 0.5", "FroudeCap = 1.0",
+  paste0("HIGH_ORDER = ", high_order_scheme),
   sprintf("MinDepth = %.2f", min_depth_m),
   sprintf("MinDepthFrc = %.2f", min_depth_m),
-  "VISCOSITY_BREAKING = T", "Cbrk1 = 0.65", "Cbrk2 = 0.35",
+  "VISCOSITY_BREAKING = T", "Cbrk1 = 0.45", "Cbrk2 = 0.35",
+  "WAVEMAKER_Cbrk = 1.0",
   # The public current pages use time-mean currents. Do not write
   # phase-resolved U/V snapshots: they are wave-orbital velocities, not the
   # persistent current displayed by the streamline/particle products.
@@ -1101,6 +1128,10 @@ grid_info <- data.frame(
   funwave_width_wk_half_width_m = funwave_width_wk_m,
   source_exclusion_label = source_exclusion_label,
   source_min_depth_required_m = source_min_depth_required_m,
+  source_reference_depth_m = source_reference_depth_m,
+  source_uniformity_fraction = source_uniformity_fraction,
+  source_uniformity_min_depth_m = source_uniformity_min_depth_m,
+  source_effective_min_depth_required_m = source_effective_min_depth_required_m,
   source_y_first_cell_m = source_y_first_cell_m,
   source_y_last_cell_m = source_y_last_cell_m,
   source_y_cell_count = length(source_y_indices),
@@ -1110,6 +1141,7 @@ grid_info <- data.frame(
   time_ramp_periods = time_ramp_periods,
   time_ramp_seconds = time_ramp_seconds,
   time_ramp_end_amplitude = time_ramp_end_amplitude,
+  high_order_scheme = high_order_scheme,
   min_depth_m = min_depth_m,
   min_depth_frc_m = min_depth_m,
   far_sponge_width_m = far_x_sponge,
@@ -1142,8 +1174,11 @@ message("Wavemaker: Xc_WK=", round(x_wk, 1), " m; ",
         " m; Delta_WK=", round(delta_wk, 3))
 message("Wavemaker y segment: ", round(ywidth_wk, 1), " m (j=",
         min(source_y_indices), " to ", max(source_y_indices), "); DEP_WK=",
-        round(dep_wk, 2), " m; minimum permitted source depth=",
-        round(source_min_depth_required_m, 2), " m; ", source_exclusion_label)
+        round(dep_wk, 2), " m; required source depth=",
+        round(source_effective_min_depth_required_m, 2), " m (Hs limit ",
+        round(source_min_depth_required_m, 2), " m; uniformity limit ",
+        round(source_uniformity_min_depth_m, 2), " m); ",
+        source_exclusion_label)
 message("Wavemaker ramp: ", time_ramp_periods, " peak periods (",
         round(time_ramp_seconds, 1), " s); amplitude factor at ", total_time,
         " s = ", format(round(time_ramp_end_amplitude, 4), nsmall = 4),
