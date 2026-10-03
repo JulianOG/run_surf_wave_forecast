@@ -54,26 +54,22 @@ TMA/JONSWAP-style wave field:
 | Mean direction-from | Converted to model travel direction for ThetaPeak; peak direction is fallback |
 | Mean directional spread | Sigma_Theta; peak spread, then 20°, are fallbacks |
 
-The numerical source is a continuous line wavemaker along the usable,
-buoy-side model boundary. Its cross-shore Gaussian envelope is 50 m wide,
-located beyond a 100 m source-side sponge and a 60 m clear gap. The shallow
-south-west headland embayment is excluded from this line. The remaining source
-is the longest continuous section that is fully wet through the 50 m source
-envelope and has a depth of at least `max(5 m, 1.5 × Hs)`. Because FUNWAVE
-uses one `DEP_WK` for the whole line, the selected cells must also match the
-offshore median depth: at least 80% for ordinary seas and 90% for `Hs >= 4 m`.
-`DEP_WK` and `Delta_WK` are calculated from that exact depth-consistent
-section, not a full-width median that can conceal a shallow source endpoint.
-This source
-parameterisation represents the integral buoy sea state; it is not a
-phase-resolved buoy replay or a full two-dimensional spectrum.
+The numerical source is a continuous line wavemaker across the full buoy-side
+model boundary (6.2 km / 620 y cells). Its cross-shore Gaussian envelope is
+50 m wide, located beyond a 100 m source-side sponge and a 60 m clear gap. A
+shortened source created two artificial line ends; the saved failure field
+showed the instability beginning beside one of them. The full-width paddle
+removes that discontinuity while retaining the same cross-shore location and
+forcing. `DEP_WK` is the median positive water depth across the complete 50 m
+source strip. This source parameterisation represents the integral buoy sea
+state; it is not a phase-resolved buoy replay or a full two-dimensional
+spectrum.
 
-`output/source_wavemaker_diagnostic.csv` records every potential source cell,
-its geographic location, minimum and median source-envelope depth, whether it
-was in the south-west exclusion, whether it met the depth-consistency test and
-whether it was selected. Both workflows upload this diagnostic even if
-FUNWAVE subsequently fails, together with the generated input, depth grid,
-warped bathymetry and FUNWAVE's emergency eta/mask files when available.
+`output/source_wavemaker_diagnostic.csv` records every source-line cell, its
+geographic location and the minimum/median source-envelope depth. Both
+workflows upload this diagnostic even if FUNWAVE subsequently fails, together
+with the generated input, depth grid, warped bathymetry and FUNWAVE's
+emergency eta/mask files when available.
 
 Strongly oblique source directions are retained but flagged in metadata and
 should be interpreted cautiously because lateral sponges can absorb part of
@@ -105,7 +101,7 @@ an unrelated tide observation.
 | MinDepth | 0.10 m | Wet/dry threshold |
 | MinDepthFrc | 0.10 m | Numerical floor in momentum, CFL and friction terms |
 | Cd | 0.002 | Quadratic bottom drag |
-| CFL | 0.5 | Adaptive time-step control |
+| CFL | 0.45 | Adaptive time-step control |
 | FroudeCap | 1.0 | Limits unrealistically fast shallow flow |
 | HIGH_ORDER | THIRD | TVD spatial reconstruction |
 | VISCOSITY_BREAKING | T | Eddy-viscosity breaking option |
@@ -172,7 +168,7 @@ sensitivities, not Port Fairy calibration:
 | Grid spacing | 5 m × 5 m | 1.5 m | 2 m |
 | Wavemaker | WK_IRR | WK_IRR | WK_NEW_IRR |
 | Cd | 0.002 | 0.002 | 0.002 |
-| CFL | 0.5 | 0.15 | 0.05 |
+| CFL | 0.45 | 0.15 | 0.05 |
 | MinDepth | 0.10 m | 0.001 m | 0.001 m |
 | Breaking viscosity | T | T | F |
 
