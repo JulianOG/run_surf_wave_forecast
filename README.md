@@ -22,7 +22,8 @@ The live GitHub Pages report provides:
   transect;
 - diagnostic current pages based on smoothed FUNWAVE Umean/Vmean fields,
   including streamlines, particle trails, Earth-style particles and
-  Leaflet.Velocity;
+  Leaflet.Velocity, with a selectable depth-integrated mean-current
+  momentum-flux proxy;
 - provenance, forcing geometry and interpretation information.
 
 Stable social assets are written below the Pages assets directory, alongside
@@ -34,7 +35,7 @@ truth for interpretation.
 | Workflow | Purpose | Configuration |
 | --- | --- | --- |
 | Daily FUNWAVE test and report | Scheduled daily at 03:17 UTC, with manual dispatch available | 5 m × 5 m grid; 10-minute run; output every 15 s |
-| Historical Port Fairy reports | Manual workflow for one or more Port Fairy local dates | 2.5 m cross-shore × 10 m alongshore grid; public fields aggregated to 10 m; separate timestamped artifacts |
+| Historical Port Fairy reports | Manual workflow for one or more Port Fairy local dates | 5 m × 5 m model grid; public fields aggregated to 10 m; separate timestamped artifacts |
 | Compact upstream test | Runs as part of the daily workflow | Confirms the pinned FUNWAVE executable before the Port Fairy case |
 
 Both Port Fairy workflows run FUNWAVE with two MPI ranks. The daily workflow
@@ -59,7 +60,8 @@ The case uses:
 | Control | Value |
 | --- | --- |
 | Bottom drag, Cd | 0.002 |
-| CFL | 0.45 |
+| CFL | 0.45; 0.25 when Hs is 4 m or greater |
+| FroudeCap | 1.5 |
 | Wet/dry and numerical minimum depth | 0.10 m |
 | Spatial reconstruction | Explicit third-order TVD |
 | Breaking | Eddy-viscosity scheme; Cbrk1 = 0.45, Cbrk2 = 0.35 |
@@ -71,10 +73,11 @@ The case uses:
 
 FUNWAVE uses the smaller of `MinDepth` and `MinDepthFrc`; both are explicitly
 set to 10 cm here. This does not reduce the imposed wave height. For severe
-observed seas (`Hs >= 4 m`), the 20-peak-period ramp delays source start-up
-without reducing the observed forcing. In the 10-minute case, the 5.29 m,
-20.5 s historical sea state reaches 99.98% of its requested amplitude by the
-end of the simulation.
+observed seas (`Hs >= 4 m`), the 20-peak-period ramp and a 0.25 CFL delay and
+resolve source start-up without reducing the observed forcing. `FroudeCap =
+1.5` is deliberately above critical flow; a prior 1.0 cap was repeatedly
+reached at the deep internal source in a 5.29 m historical case before its
+blow-up.
 
 The wavemaker explicitly spans every model y cell. A trial finite segment
 created artificial source ends, and the saved failure field showed the

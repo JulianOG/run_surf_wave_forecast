@@ -161,11 +161,11 @@ jobs:
       - name: Build historical bathymetry and buoy/water-level forcing
         env:
           PORT_FAIRY_OBSERVATION_UTC: ${{ matrix.observation_utc }}
-          # Historical runs use 2.5 m in the cross-shore/wave-propagation
-          # direction (+x) and 10 m alongshore (+y). Daily runs retain their
-          # own unchanged 5 m x 5 m defaults.
-          PORT_FAIRY_DX_M: 2.5
-          PORT_FAIRY_DY_M: 10
+          # Historical cases use an isotropic 5 m x 5 m numerical grid. The
+          # public fields are aggregated to 10 m after model-space masking to
+          # keep timestamped artifacts compact.
+          PORT_FAIRY_DX_M: 5
+          PORT_FAIRY_DY_M: 5
           PORT_FAIRY_PUBLIC_OUTPUT_DX_M: 10
           PORT_FAIRY_PUBLIC_OUTPUT_DY_M: 10
         run: Rscript port_fairy/setup_port_fairy_funwave.R
@@ -230,4 +230,3 @@ jobs:
           path: historical-reports/${{ matrix.case_id }}/
           retention-days: 90
           if-no-files-found: error
-

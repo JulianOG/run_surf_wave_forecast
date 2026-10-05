@@ -1,8 +1,9 @@
 #!/usr/bin/env Rscript
 
 # Build a Port Fairy FUNWAVE-TVD case from the Victorian DEM and the newest
-# usable Spotter observation. The daily workflow uses a 5 m model grid; the
-# historical workflow can request a 2.5 m model grid through its environment.
+# usable Spotter observation. Both daily and historical workflows use a 5 m
+# square model grid, with the historical workflow selecting its date through
+# the environment.
 #
 # The model uses an Oblique Mercator grid. Its +x direction is perpendicular to
 # the long buoy-side model boundary, pointing from that edge toward the coast.
@@ -820,7 +821,16 @@ min_depth_m <- 0.10
 # cases. Keep this explicit so a container/default change cannot silently
 # switch the severe-sea case back to the less robust fourth-order option.
 high_order_scheme <- "THIRD"
-cfl_number <- 0.45
+# Large observed seas are numerically more demanding at the internal source.
+# Retain the normal field-case CFL for ordinary conditions, but use a smaller
+# adaptive time-step target for Hs >= 4 m. This changes only the numerical
+# step size; it does not reduce the imposed Hmo or directional spectrum.
+cfl_number <- if (high_energy_case) 0.25 else 0.45
+# A cap of one is a critical Froude number and the failed severe-sea run
+# repeatedly reached it at the source. FUNWAVE guidance uses values above
+# critical (commonly 1.5--3); 1.5 retains a limiter without clipping the
+# source-zone flow at its critical threshold.
+froude_cap <- 1.5
 
 # Match FUNWAVE-TVD's Boussinesq dispersion relation when calculating the
 # peak wavelength at the wavemaker depth.
@@ -1003,7 +1013,8 @@ input <- c(
   sprintf("Sponge_north_width = %.1f", lateral_sponge_width),
   # The effective wet/dry value is MIN(MinDepth, MinDepthFrc); keep both at
   # the stable 10 cm configuration rather than inadvertently using 1 cm.
-  "Cd = 0.002", sprintf("CFL = %.2f", cfl_number), "FroudeCap = 1.0",
+  "Cd = 0.002", sprintf("CFL = %.2f", cfl_number),
+  sprintf("FroudeCap = %.1f", froude_cap),
   paste0("HIGH_ORDER = ", high_order_scheme),
   sprintf("MinDepth = %.2f", min_depth_m),
   sprintf("MinDepthFrc = %.2f", min_depth_m),
@@ -1052,6 +1063,12 @@ grid_info <- data.frame(
   min_depth_m = min_depth_m,
   min_depth_frc_m = min_depth_m,
   cfl_number = cfl_number,
+  froude_cap = froude_cap,
+  high_energy_stability_profile = if (high_energy_case) {
+    "CFL 0.25; FroudeCap 1.5; 20-Tp ramp"
+  } else {
+    "CFL 0.45; FroudeCap 1.5; 10-Tp ramp"
+  },
   far_sponge_width_m = far_x_sponge,
   lateral_sponge_width_m = lateral_sponge_width,
   funwave_theta_peak_deg = theta_peak,

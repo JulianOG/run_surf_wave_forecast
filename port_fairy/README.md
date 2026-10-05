@@ -32,12 +32,12 @@ reprojected to WGS84 only for maps and published rasters.
 | Run type | Numerical grid | Public report grid | Duration | Fields |
 | --- | --- | --- | --- | --- |
 | Daily | 5 m × 5 m | 5 m | 600 s | 15 s snapshots |
-| Historical | 2.5 m cross-shore × 10 m alongshore | 10 m × 10 m | 600 s | 15 s snapshots |
+| Historical | 5 m × 5 m | 10 m × 10 m | 600 s | 15 s snapshots |
 
-Historical aggregation only affects report products. FUNWAVE always calculates
-on its native grid. A historical log label of “2.5 m × 1 m” was formatting
-only: the 10 m alongshore spacing is retained numerically and is now labelled
-correctly.
+Both workflows use an isotropic 5 m × 5 m numerical grid, avoiding a 4:1
+cross-shore/alongshore aspect ratio in energetic oblique seas. Historical
+maps, animations and GeoTIFFs are then aggregated to 10 m only after native-
+grid masking, to keep timestamped artifacts compact.
 
 FUNWAVE uses two MPI ranks with a 2 × 1 decomposition in both workflows.
 
@@ -101,8 +101,8 @@ an unrelated tide observation.
 | MinDepth | 0.10 m | Wet/dry threshold |
 | MinDepthFrc | 0.10 m | Numerical floor in momentum, CFL and friction terms |
 | Cd | 0.002 | Quadratic bottom drag |
-| CFL | 0.45 | Adaptive time-step control |
-| FroudeCap | 1.0 | Limits unrealistically fast shallow flow |
+| CFL | 0.45 normally; 0.25 for Hs ≥ 4 m | Adaptive time-step control |
+| FroudeCap | 1.5 | Limits unrealistically fast flow without a critical 1.0 cap |
 | HIGH_ORDER | THIRD | TVD spatial reconstruction |
 | VISCOSITY_BREAKING | T | Eddy-viscosity breaking option |
 | Cbrk1, Cbrk2 | 0.45, 0.35 | FUNWAVE-TVD recalibrated breaking coefficients |
@@ -111,8 +111,10 @@ an unrelated tide observation.
 FUNWAVE uses the smaller of `MinDepth` and `MinDepthFrc` as the effective
 threshold. They are both set to 0.10 m here, so the intended stable value is
 unambiguous. Severe observed seas (`Hs >= 4 m`) use a 20-peak-period source
-ramp rather than the normal 10 peak periods; this reduces only the start-up
-transient and does not cap the requested Hs.
+ramp and CFL = 0.25 rather than the normal 10-period ramp and CFL = 0.45.
+Those controls only make time integration more conservative; they do not cap
+the requested Hs. `FroudeCap = 1.5` avoids the earlier critical 1.0 cap, which
+was repeatedly reached at the internal source before a severe-sea blow-up.
 
 ## Outputs and display rules
 
@@ -120,7 +122,9 @@ FUNWAVE writes depth.txt, input.txt, eta, Hsig, Umean, Vmean, MASK and station
 files under output/. The report:
 
 - reconstructs raw model matrices on the native rotated grid;
-- applies both DEM and FUNWAVE wet/dry masks before WGS84 projection;
+- derives a maximum-eta inundation mask from the original AHD DEM and saved
+  eta frames before WGS84 projection, retaining beach cells up to the maximum
+  simulated water level rather than permanently masking them at MSL;
 - masks seaward-of-wavemaker values in public coastal products;
 - shows latest eta, maximum positive eta and maximum Hsig as separate
   diagnostics;
@@ -129,7 +133,8 @@ files under output/. The report:
   initial frame from the full animation;
 - defaults interactive maps to satellite imagery, with OpenStreetMap available
   through the layer control;
-- limits interactive maps to the local model area.
+- lets maps zoom out to approximately twice the model-domain span;
+- writes full-viewport current-animation pages with a full-screen control.
 
 Maximum eta is the cellwise maximum positive elevation across saved eta frames.
 It is not individual wave height. The Hsig product comes from FUNWAVE’s
@@ -141,9 +146,13 @@ grid cell and written directly to a station file every second. The report does
 not interpolate these time series.
 
 Current pages use Umean/Vmean, not phase-resolved U/V. The vector components
-are smoothed spatially before visualisation, and the wavemaker neighbourhood
-is excluded from current particle seeding so numerical-source circulation is
-not presented as nearshore flow.
+are Gaussian-smoothed with sigma = 25 m before visualisation, and the
+wavemaker neighbourhood is excluded from current particle seeding so
+numerical-source circulation is not presented as nearshore flow. The Earth-
+style and Leaflet.Velocity pages can instead animate the depth-integrated
+mean-current momentum-flux proxy `h |U| U`. It is useful for weighting the
+mean flow by depth and speed, but it is not FUNWAVE wave radiation stress and
+does not change the flow direction.
 
 ## Historical reports
 
@@ -168,7 +177,7 @@ sensitivities, not Port Fairy calibration:
 | Grid spacing | 5 m × 5 m | 1.5 m | 2 m |
 | Wavemaker | WK_IRR | WK_IRR | WK_NEW_IRR |
 | Cd | 0.002 | 0.002 | 0.002 |
-| CFL | 0.45 | 0.15 | 0.05 |
+| CFL | 0.45 normally; 0.25 for Hs ≥ 4 m | 0.15 | 0.05 |
 | MinDepth | 0.10 m | 0.001 m | 0.001 m |
 | Breaking viscosity | T | T | F |
 
