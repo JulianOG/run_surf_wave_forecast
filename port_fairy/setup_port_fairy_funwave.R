@@ -392,6 +392,10 @@ portland_water_level_lat_m <- NA_real_
 portland_water_level_ahd_m <- 0
 portland_time_forcing <- as.POSIXct(NA, tz = "UTC")
 portland_source_file <- NA_character_
+portland_mean_annual_maximum_ahd_m <- NA_real_
+portland_mean_annual_maximum_years <- 0L
+portland_mean_annual_maximum_first_year <- NA_integer_
+portland_mean_annual_maximum_last_year <- NA_integer_
 
 read_portland_hourly <- function(path) {
   if (!file.exists(path) || file.info(path)$size <= 1000) return(NULL)
@@ -440,6 +444,32 @@ nearest_portland_record <- function(x, target_time) {
     index = index,
     gap_minutes = abs(as.numeric(difftime(x$time_utc[index], target_time, units = "mins")))
   )
+}
+
+# Use local civil years and retain only years with at least 300 observed days,
+# so incomplete start/end years in the UHSLC file cannot bias the Portland
+# mean annual maximum used as a reference line in the report.
+summarise_portland_mean_annual_maximum <- function(x,
+                                                    tz = "Australia/Melbourne") {
+  empty <- data.frame(
+    year = integer(), observed_days = integer(), annual_maximum_ahd_m = numeric(),
+    stringsAsFactors = FALSE
+  )
+  if (is.null(x) || !nrow(x)) return(empty)
+  valid <- x[is.finite(x$water_level_ahd_m) & !is.na(x$time_utc), , drop = FALSE]
+  if (!nrow(valid)) return(empty)
+  valid$year <- as.integer(format(valid$time_utc, tz = tz, format = "%Y"))
+  valid$day <- format(valid$time_utc, tz = tz, format = "%Y-%m-%d")
+  coverage <- stats::aggregate(
+    day ~ year, data = valid, FUN = function(z) length(unique(z))
+  )
+  names(coverage)[2] <- "observed_days"
+  maxima <- stats::aggregate(
+    water_level_ahd_m ~ year, data = valid, FUN = max, na.rm = TRUE
+  )
+  names(maxima)[2] <- "annual_maximum_ahd_m"
+  annual <- merge(coverage, maxima, by = "year", all = FALSE)
+  annual[annual$observed_days >= 300 & is.finite(annual$annual_maximum_ahd_m), , drop = FALSE]
 }
 
 download_current_portland_hourly <- function(data_dir) {
@@ -508,6 +538,16 @@ if (is.null(portland) || !is.finite(nearest_portland$gap_minutes) ||
       portland_source_file <- refreshed_file
     }
   }
+}
+
+portland_annual_maxima <- summarise_portland_mean_annual_maximum(portland)
+if (nrow(portland_annual_maxima)) {
+  portland_mean_annual_maximum_ahd_m <- mean(
+    portland_annual_maxima$annual_maximum_ahd_m, na.rm = TRUE
+  )
+  portland_mean_annual_maximum_years <- nrow(portland_annual_maxima)
+  portland_mean_annual_maximum_first_year <- min(portland_annual_maxima$year)
+  portland_mean_annual_maximum_last_year <- max(portland_annual_maxima$year)
 }
 
 if (!is.null(portland) && is.finite(nearest_portland$gap_minutes) &&
@@ -610,6 +650,10 @@ historical_window_metadata <- data.frame(
   wave_records_qc_1_or_2 = sum(historical_wave_output$qc_accepted),
   portland_records = nrow(historical_portland_output),
   portland_datum = "LAT assumed; AHD = LAT - 0.597 m",
+  portland_mean_annual_maximum_ahd_m = portland_mean_annual_maximum_ahd_m,
+  portland_mean_annual_maximum_years = portland_mean_annual_maximum_years,
+  portland_mean_annual_maximum_first_year = portland_mean_annual_maximum_first_year,
+  portland_mean_annual_maximum_last_year = portland_mean_annual_maximum_last_year,
   stringsAsFactors = FALSE
 )
 write.csv(historical_window_metadata,
@@ -761,7 +805,11 @@ forcing <- data.frame(
   portland_water_level_lat_m = portland_water_level_lat_m,
   portland_reference_datum = portland_reference_datum,
   portland_to_ahd_offset_m = portland_to_ahd_offset_m,
-  portland_water_level_ahd_m_applied = portland_water_level_ahd_m
+  portland_water_level_ahd_m_applied = portland_water_level_ahd_m,
+  portland_mean_annual_maximum_ahd_m = portland_mean_annual_maximum_ahd_m,
+  portland_mean_annual_maximum_years = portland_mean_annual_maximum_years,
+  portland_mean_annual_maximum_first_year = portland_mean_annual_maximum_first_year,
+  portland_mean_annual_maximum_last_year = portland_mean_annual_maximum_last_year
 )
 write.csv(forcing, file.path(out_dir, "latest_buoy_forcing.csv"), row.names = FALSE)
 

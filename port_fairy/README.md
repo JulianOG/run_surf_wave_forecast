@@ -94,6 +94,11 @@ to output/latest_buoy_forcing.csv. If no contemporaneous record exists, the
 case explicitly warns and uses a 0.000 m AHD fallback; it does not substitute
 an unrelated tide observation.
 
+The selected h129 record also provides the Portland mean annual maximum of
+hourly AHD water levels, calculated from local years with at least 300 observed
+days. The value and year count are retained in metadata and shown as a dashed
+reference line on observed-condition plots.
+
 ## Shallow-water treatment
 
 | Control | Value | Role |
@@ -128,13 +133,16 @@ files under output/. The report:
 - masks seaward-of-wavemaker values in public coastal products;
 - shows latest eta, maximum positive eta and maximum Hsig as separate
   diagnostics;
-- uses a fixed −5 to 5 m eta scale and 0 to 4 m Hsig scale;
+- uses a fixed −5 to 5 m eta scale and 0 to 6 m Hsig scale;
 - writes 6-second full-run and final-one-sixth GIFs, excluding the 00:00
   initial frame from the full animation;
 - defaults interactive maps to satellite imagery, with OpenStreetMap available
-  through the layer control;
+  through the layer control and a water-depth bathymetry overlay on the latest
+  free-surface map;
 - lets maps zoom out to approximately twice the model-domain span;
-- writes full-viewport current-animation pages with a full-screen control.
+- writes two full-viewport current-animation pages with a full-screen control
+  and responsive in-frame legends;
+- places report metadata tables inside expandable details controls.
 
 Maximum eta is the cellwise maximum positive elevation across saved eta frames.
 It is not individual wave height. The Hsig product comes from FUNWAVE’s
@@ -143,16 +151,18 @@ mean-wave diagnostic and is the appropriate public wave-height map.
 Five stations follow the requested buoy-to-nearshore transect ending at
 142.2456520° E, −38.3789015° S. Each is snapped once to an integer FUNWAVE
 grid cell and written directly to a station file every second. The report does
-not interpolate these time series.
+not interpolate these time series. Station markers and the companion
+time-series lines use a Magma scale from black-purple offshore to pale yellow
+nearshore.
 
 Current pages use Umean/Vmean, not phase-resolved U/V. The vector components
-are Gaussian-smoothed with sigma = 25 m before visualisation, and the
+are Gaussian-smoothed with sigma = 10 m before visualisation, and the
 wavemaker neighbourhood is excluded from current particle seeding so
-numerical-source circulation is not presented as nearshore flow. The Earth-
-style and Leaflet.Velocity pages can instead animate the depth-integrated
-mean-current momentum-flux proxy `h |U| U`. It is useful for weighting the
-mean flow by depth and speed, but it is not FUNWAVE wave radiation stress and
-does not change the flow direction.
+numerical-source circulation is not presented as nearshore flow. The retained
+Earth-style page can instead animate the depth-integrated mean-current
+momentum-flux proxy `h |U| U`. It is useful for weighting the mean flow by
+depth and speed, but it is not FUNWAVE wave radiation stress and does not
+change the flow direction.
 
 ## Historical reports
 

@@ -215,14 +215,8 @@ jobs:
           printf '%s\n' '${{ matrix.observation_utc }}' > "$PORT_FAIRY_SITE_DIR/requested-utc-time.txt"
           test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-flow-particles.html"
           test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-earth-nullschool-flow.html"
-          test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-leaflet-velocity.html"
           test -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-historical-observations.html"
           test -d "$PORT_FAIRY_SITE_DIR/assets/port-fairy-historical-observations_files"
-          if [ -s "$PORT_FAIRY_SITE_DIR/assets/port-fairy-current-streamline-diagnostic.html" ]; then
-            echo "Option 1 streamline diagnostic page published."
-          else
-            echo "::warning::Option 1 streamline diagnostic page was not written; see the report's current-flow diagnostics table."
-          fi
       - name: Upload dated report and assets
         uses: actions/upload-artifact@v4
         with:

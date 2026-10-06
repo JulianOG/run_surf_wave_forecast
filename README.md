@@ -17,13 +17,13 @@ The live GitHub Pages report provides:
 - 6-second animations of simulated free-surface elevation for the full run and
   its final sixth;
 - interactive local WGS84 maps of latest elevation, maximum positive elevation
-  and peak simulated significant wave height;
+  and peak simulated significant wave height, with a toggleable water-depth
+  bathymetry layer on the latest-elevation map;
 - five exact FUNWAVE grid-point elevation records from the buoy-to-nearshore
   transect;
-- diagnostic current pages based on smoothed FUNWAVE Umean/Vmean fields,
-  including streamlines, particle trails, Earth-style particles and
-  Leaflet.Velocity, with a selectable depth-integrated mean-current
-  momentum-flux proxy;
+- two full-viewport current-particle pages based on smoothed FUNWAVE
+  Umean/Vmean fields, including the Earth-style page with a selectable
+  depth-integrated mean-current momentum-flux proxy;
 - provenance, forcing geometry and interpretation information.
 
 Stable social assets are written below the Pages assets directory, alongside
