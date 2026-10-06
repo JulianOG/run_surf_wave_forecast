@@ -24,20 +24,23 @@ all model inputs to output/ and never modifies the source DEM.
 
 ## Grid and simulation modes
 
-The grid is a complete rectangular local Oblique Mercator domain. Its x-axis is
-always oriented from the buoy-side wavemaker edge toward the coast. The
-rectangular FUNWAVE fields are reconstructed in this rotated grid, then
-reprojected to WGS84 only for maps and published rasters.
+The grid is one complete rectangular local Oblique Mercator domain, fixed from
+the successful live reference run `port-fairy-20261005T225000Z` (2026-10-05
+22:50 UTC). It uses Omerc alpha 116.621°, source edge `maximum rotated x` and
+a 5 m template of 642 × 1,259 cells; every daily and historical case rebuilds
+this identical grid before applying its own wave forcing. Rectangular FUNWAVE
+fields are reconstructed in this fixed rotated grid, then reprojected to WGS84
+only for maps and published rasters.
 
 | Run type | Numerical grid | Public report grid | Duration | Fields |
 | --- | --- | --- | --- | --- |
-| Daily | 5 m × 5 m | 5 m | 600 s | 15 s snapshots |
+| Daily | 5 m × 5 m | 10 m × 10 m | 600 s | 15 s snapshots |
 | Historical | 5 m × 5 m | 10 m × 10 m | 600 s | 15 s snapshots |
 
-Both workflows use an isotropic 5 m × 5 m numerical grid, avoiding a 4:1
-cross-shore/alongshore aspect ratio in energetic oblique seas. Historical
-maps, animations and GeoTIFFs are then aggregated to 10 m only after native-
-grid masking, to keep timestamped artifacts compact.
+Both workflows use the same isotropic 5 m × 5 m numerical grid, avoiding a
+4:1 cross-shore/alongshore aspect ratio in energetic oblique seas. Their maps,
+animations and GeoTIFFs are then aggregated to 10 m only after native-grid
+masking, to keep published files compact without changing the model geometry.
 
 FUNWAVE uses two MPI ranks with a 2 × 1 decomposition in both workflows.
 
@@ -51,7 +54,7 @@ TMA/JONSWAP-style wave field:
 | --- | --- |
 | Significant wave height | Hmo |
 | Peak period | FreqPeak |
-| Mean direction-from | Converted to model travel direction for ThetaPeak; peak direction is fallback |
+| Mean direction-from | Converted to `ThetaPeak` relative to the fixed live-forecast grid; peak direction is fallback |
 | Mean directional spread | Sigma_Theta; peak spread, then 20°, are fallbacks |
 
 The numerical source is a continuous line wavemaker across the full buoy-side
@@ -71,9 +74,9 @@ workflows upload this diagnostic even if FUNWAVE subsequently fails, together
 with the generated input, depth grid, warped bathymetry and FUNWAVE's
 emergency eta/mask files when available.
 
-Strongly oblique source directions are retained but flagged in metadata and
-should be interpreted cautiously because lateral sponges can absorb part of
-the directional wave field.
+Strongly oblique source directions are retained but flagged in metadata. The
+grid is intentionally not rotated to follow them, so cases whose energy meets
+a lateral sponge should be interpreted cautiously.
 
 ## Water level and bathymetry
 

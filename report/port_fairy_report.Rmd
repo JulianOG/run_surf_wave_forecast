@@ -1910,6 +1910,11 @@ cells before being projected to WGS84. Interactive maps start on the local
 domain but can zoom out to roughly twice its span; current-animation pages
 use the full browser viewport and offer a full-screen button.
 
+All forecast and historical cases use the fixed live-reference grid recorded
+in this report's provenance, rather than rotating the domain to match the
+selected buoy direction. The selected direction is instead applied through
+`ThetaPeak`, so a map cell represents the same physical location across dates.
+
 Live report: <https://julianog.github.io/run_surf_wave_forecast/>. Source:
 <https://github.com/JulianOG/run_surf_wave_forecast>.
 
@@ -1920,6 +1925,8 @@ direction_status <- if (forcing$inward_source_component > 0) {
   "Warning: the wave vector points out of the selected source edge. Do not interpret this run as a coastal-wave prediction."
 }
 report_table(transpose_summary(data.frame(
+  grid_mode = if ("grid_mode" %in% names(grid)) grid$grid_mode else "legacy per-record grid",
+  grid_reference_run_id = if ("grid_reference_run_id" %in% names(grid)) grid$grid_reference_run_id else NA_character_,
   source_edge = grid$source_edge,
   boundary_direction_statistic = forcing$boundary_direction_statistic,
   requested_model_x_bearing_deg_true = forcing$requested_model_x_bearing_deg_true,

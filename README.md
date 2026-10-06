@@ -44,10 +44,14 @@ do not replace the live forecast.
 
 ## Model method
 
-The case is built in a local Oblique Mercator projection. The model x-axis is
-reordered on every run to point from the buoy-side source edge toward the
-coast. FUNWAVE fields are reconstructed in that native rotated grid before
-being projected to WGS84 for maps and animations.
+The case uses one fixed local Oblique Mercator grid for every daily and
+historical run: the successful live reference run
+`port-fairy-20261005T225000Z` (5 m cells, Omerc alpha 116.621°, source on the
+maximum rotated-x edge). FUNWAVE fields are reconstructed on that native
+rotated grid before being projected to WGS84, so matching grid cells and map
+footprints refer to the same physical places across dates. Each buoy record's
+wave direction is converted to `ThetaPeak` relative to this fixed grid; it no
+longer rotates the domain.
 
 The model uses the internal irregular wavemaker, WK_IRR. Significant wave
 height, peak period, wave direction and directional spread form a parametric

@@ -228,10 +228,20 @@ domain_corners_ll <- rbind(
   c(142.2310, -38.3760)
 )
 
-# The grid is rebuilt daily with model +x aligned to the newest *mean* wave
-# travel direction.  A fixed coast-normal grid forced with an oblique sea state
-# lets much of the energy meet a lateral boundary before reaching the local
-# coast; this is a geometry issue, not a reason to remove the source sponge.
+# Fixed live-forecast grid reference. Every daily and historical case uses this
+# same projection, rectangular extent and source edge, so grid-cell locations
+# and the WGS84 model outline are directly comparable between dates. It is the
+# successful live forecast published for 2026-10-05 22:50 UTC. Wave direction
+# remains case-specific through FUNWAVE ThetaPeak; it no longer rotates the
+# model domain.
+fixed_grid_mode <- "fixed_live_forecast_grid"
+fixed_grid_reference_run_id <- "port-fairy-20261005T225000Z"
+fixed_grid_reference_time_utc <- "2026-10-05 22:50:00 UTC"
+fixed_grid_omerc_alpha_deg <- 116.621
+fixed_grid_model_x_bearing_deg_true <- 333.4683
+fixed_grid_source_edge <- "maximum rotated x"
+fixed_grid_mglob <- 642L
+fixed_grid_nglob <- 1259L
 read_positive_setting <- function(name, default) {
   value <- suppressWarnings(as.numeric(Sys.getenv(name, unset = as.character(default))))
   if (!is.finite(value) || value <= 0) {
@@ -248,10 +258,9 @@ metres_label <- function(x) {
   )
 }
 
-# FUNWAVE always writes native-grid fields. The daily workflow leaves both
-# spacings at 5 m. Historical runs may set a finer cross-shore DX while
-# retaining a coarser alongshore DY; public assets are then aggregated in the
-# rotated CRS without changing the numerical simulation.
+# FUNWAVE always writes native-grid fields. Both daily and historical workflows
+# use the same 5 m x 5 m fixed live-forecast grid; public assets are aggregated
+# to 10 m in that same rotated CRS after native-grid masking.
 dx <- read_positive_setting("PORT_FAIRY_DX_M", 5)
 dy <- read_positive_setting("PORT_FAIRY_DY_M", dx)
 public_output_dx_m <- read_positive_setting("PORT_FAIRY_PUBLIC_OUTPUT_DX_M", 10)
@@ -665,15 +674,12 @@ write.csv(historical_window_metadata,
 spread_i <- dir_spread[i]
 sigma_theta <- if (is.finite(spread_i) && spread_i > 0 && spread_i <= 90) spread_i else 20.0
 
-# The Spotter direction is a compass FROM direction.  Align model +x with its
-# physical travel direction so the daily source is nearly normal to the model
-# boundary and does not immediately encounter a lateral sponge.
+# The Spotter direction is a compass FROM direction. The fixed grid remains
+# unchanged; ThetaPeak below expresses this record's travel direction relative
+# to the fixed live-forecast model axes.
 bearing_to <- (dir_from[i] + 180) %% 360
-model_x_bearing_target <- bearing_to
-# With this local Oblique Mercator convention, PROJ alpha is 90 degrees from
-# the realised raster +x bearing.  The realised bearing is measured below and
-# recorded as a run diagnostic rather than assumed.
-model_x_bearing_guess <- (model_x_bearing_target + 90) %% 360
+model_x_bearing_target <- fixed_grid_model_x_bearing_deg_true
+model_x_bearing_guess <- fixed_grid_omerc_alpha_deg
 
 # ----- Warp and coarsen the DEM ---------------------------------------------
 bathy <- rast(bathy_file)
@@ -722,6 +728,10 @@ if (source_is_low_x) {
 } else {
   depth_funwave <- t(depth_matrix[, ncol(depth_matrix):1, drop = FALSE])
   source_edge <- "maximum rotated x"
+}
+if (!identical(source_edge, fixed_grid_source_edge)) {
+  stop("The fixed live-forecast grid requires source_edge = ",
+       fixed_grid_source_edge, "; received ", source_edge, ".")
 }
 
 # Measure the bearings of the *actual* model axes after the oblique projection
@@ -782,6 +792,12 @@ forcing <- data.frame(
     NA_character_
   },
   historical_run = historical_run,
+  grid_mode = fixed_grid_mode,
+  grid_reference_run_id = fixed_grid_reference_run_id,
+  grid_reference_time_utc = fixed_grid_reference_time_utc,
+  grid_reference_omerc_alpha_deg = fixed_grid_omerc_alpha_deg,
+  grid_reference_model_x_bearing_deg_true = fixed_grid_model_x_bearing_deg_true,
+  grid_reference_source_edge = fixed_grid_source_edge,
   buoy_source_file = basename(buoy_file),
   qc = qc[i], hs_m = hs[i], tp_s = tp[i],
   boundary_direction_statistic = direction_statistic[i],
@@ -815,6 +831,10 @@ write.csv(forcing, file.path(out_dir, "latest_buoy_forcing.csv"), row.names = FA
 
 mglob <- nrow(depth_funwave)     # x: east -> west
 nglob <- ncol(depth_funwave)     # y: south -> north
+if (mglob != fixed_grid_mglob || nglob != fixed_grid_nglob) {
+  stop("The fixed live-forecast grid must be ", fixed_grid_mglob, " x ",
+       fixed_grid_nglob, " cells; generated ", mglob, " x ", nglob, ".")
+}
 write.table(
   # FUNWAVE reads one y row at a time: Nglob text rows, each with Mglob values.
   t(depth_funwave), file.path(out_dir, "depth.txt"),
@@ -1081,6 +1101,14 @@ writeLines(input, file.path(out_dir, "input.txt"))
 grid_info <- data.frame(
   bathy_file = normalizePath(bathy_file),
   buoy_file = normalizePath(buoy_file),
+  grid_mode = fixed_grid_mode,
+  grid_reference_run_id = fixed_grid_reference_run_id,
+  grid_reference_time_utc = fixed_grid_reference_time_utc,
+  grid_reference_omerc_alpha_deg = fixed_grid_omerc_alpha_deg,
+  grid_reference_model_x_bearing_deg_true = fixed_grid_model_x_bearing_deg_true,
+  grid_reference_source_edge = fixed_grid_source_edge,
+  grid_reference_Mglob = fixed_grid_mglob,
+  grid_reference_Nglob = fixed_grid_nglob,
   omerc_crs = omerc_crs,
   requested_model_x_bearing_deg_true = model_x_bearing_target,
   omerc_alpha_deg = model_x_bearing_guess,
